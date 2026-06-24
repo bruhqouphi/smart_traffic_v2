@@ -1,0 +1,31 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Model weights (downloaded on first run)
+*.pt
+*.onnx
+
+# Generated data — keep the folders, ignore the contents
+data/videos/*
+!data/videos/.gitkeep
+results/*
+!results/.gitkeep
+
+# Local editor / tool settings
+.claude/
+.vscode/
+.idea/
+
+# OS cruft
+Thumbs.db
+.DS_Store

@@ -1,0 +1,61 @@
+timing:
+  min_green: 10
+  max_green: 60
+  yellow_duration: 3
+  all_red_duration: 2
+  startup_lost_time: 2.0
+  headway: 2.0
+  max_wait_threshold: 60
+
+queue_clearing:
+  short_queue_threshold: 5
+  short_queue_green: 15
+  long_queue_min_green: 20
+  long_queue_max_green: 60
+
+scenarios:
+  balanced:
+    north: 0.3
+    south: 0.3
+    east: 0.3
+    west: 0.3
+  morning_rush:
+    north: 0.5
+    south: 0.2
+    east: 0.6
+    west: 0.1
+  evening_rush:
+    north: 0.2
+    south: 0.5
+    east: 0.1
+    west: 0.6
+  asymmetric:
+    north: 0.7
+    south: 0.1
+    east: 0.4
+    west: 0.2
+
+detection:
+  vehicle_classes: [1, 2, 3, 5, 7]
+  confidence_threshold: 0.4
+  model: "yolov8n.pt"
+  frame_skip: 2
+
+visualization:
+  window_width: 1280
+  window_height: 720
+  fps: 30
+  colors:
+    red: [255, 0, 0]
+    green: [0, 255, 0]
+    yellow: [255, 255, 0]
+    background: [30, 30, 30]
+    text: [255, 255, 255]
+    bar_ns: [0, 150, 255]
+    bar_ew: [255, 150, 0]
+    roi_overlay: [0, 255, 100]
+
+metrics:
+  export_dir: "results"
+  csv_prefix: "traffic_metrics"
+  statistical_trials: 10
