@@ -97,7 +97,10 @@ python scripts/generate_plots.py --config config/low_load_config.yaml --output-d
 # Generate a synthetic traffic video (no camera needed)
 python scripts/generate_synthetic_video.py --scenario morning_rush --duration 120 --output data/videos/synthetic.mp4
 
-# Launch the live Pygame dashboard on a video
+# Launch the live Pygame dashboard on a video. With --detector color the bundled
+# synthetic ROI is loaded automatically so per-approach counts are real; pass
+# --roi <file> to override. The dashboard uses config/low_load_config.yaml
+# (tuned aging bound) by default.
 python scripts/run_dashboard.py data/videos/synthetic.mp4 --detector color
 
 # Interactively define lane ROI polygons on a video
@@ -117,7 +120,8 @@ Defined in `config/default_config.yaml` as per-approach arrival rates (vehicles/
 
 ### Dashboard controls
 
-`SPACE` pause · `1`/`2`/`3` switch algorithm · `Q` quit.
+`SPACE` pause · `1`/`2`/`3`/`4` switch algorithm (fixed / proportional /
+queue_clearing / longest_queue_first) · `Q` quit.
 
 ## How the simulation works
 

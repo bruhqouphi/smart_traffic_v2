@@ -18,12 +18,24 @@ class ColorDetector:
     low-saturation grey road background.
     """
 
-    def __init__(self, min_area: int = 400, min_saturation: int = 50):
+    def __init__(self, min_area: int = 400, min_saturation: int = 50,
+                 min_value: int = 55):
         self.min_area = min_area
         self.min_saturation = min_saturation
+        self.min_value = min_value
         kernel_size = 3
         self._kernel = cv2.getStructuringElement(
             cv2.MORPH_RECT, (kernel_size, kernel_size)
+        )
+
+    @classmethod
+    def from_config(cls, config: dict) -> "ColorDetector":
+        """Build from the `detection` block, falling back to defaults."""
+        d = config.get("detection", {})
+        return cls(
+            min_area=d.get("color_min_area", 400),
+            min_saturation=d.get("color_min_saturation", 50),
+            min_value=d.get("color_min_value", 55),
         )
 
     def detect(self, frame: np.ndarray) -> List[Detection]:
@@ -32,7 +44,7 @@ class ColorDetector:
 
         # Vehicles are colourful (high sat) and not black
         sat_mask = cv2.threshold(sat, self.min_saturation, 255, cv2.THRESH_BINARY)[1]
-        val_mask = cv2.threshold(val, 55, 255, cv2.THRESH_BINARY)[1]
+        val_mask = cv2.threshold(val, self.min_value, 255, cv2.THRESH_BINARY)[1]
         mask = cv2.bitwise_and(sat_mask, val_mask)
 
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  self._kernel)

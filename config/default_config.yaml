@@ -40,6 +40,10 @@ detection:
   confidence_threshold: 0.4
   model: "yolov8n.pt"
   frame_skip: 2
+  # ColorDetector (synthetic video) thresholds
+  color_min_area: 400
+  color_min_saturation: 50
+  color_min_value: 55
 
 visualization:
   window_width: 1280

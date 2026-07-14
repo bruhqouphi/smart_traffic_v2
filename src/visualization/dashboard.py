@@ -6,18 +6,27 @@ import cv2
 import numpy as np
 import pygame
 
+import sys
+
 from src.detection.detector import VehicleDetector
 from src.detection.roi_manager import ROIManager
 from src.detection.video_input import VideoInput
 from src.signals.phase_manager import PhaseManager, SignalState
 from src.signals.timing_algorithms import (
+    ALGORITHMS,
     QueueClearingAlgorithm,
     TimingAlgorithm,
     get_algorithm,
 )
 
-ALGORITHM_NAMES = ["fixed", "proportional", "queue_clearing"]
+# Derived from the registry so the dashboard never goes stale as algorithms are
+# added. Keys 1..N select algorithms in this order.
+ALGORITHM_NAMES = list(ALGORITHMS)
 _SIGNAL_RGB = {"red": (255, 0, 0), "green": (0, 255, 0), "yellow": (255, 255, 0)}
+# Number keys 1..4 → algorithm index 0..3
+_ALGO_KEYS = {
+    pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2, pygame.K_4: 3,
+}
 
 
 class Dashboard:
@@ -25,7 +34,7 @@ class Dashboard:
     Pygame real-time dashboard.
     Layout: top-left=video, top-right=signal diagram,
             bottom-left=bar chart, bottom-right=queue history.
-    Keys: SPACE=pause, 1/2/3=switch algorithm, Q=quit.
+    Keys: SPACE=pause, 1..N=switch algorithm, Q=quit.
     """
 
     def __init__(self, config: dict, video_path: str,
@@ -52,9 +61,16 @@ class Dashboard:
         self.r_bar = pygame.Rect(0, hh, hw, hh)
         self.r_graph = pygame.Rect(hw, hh, hw, hh)
 
-        # Algorithm / phase state
-        self.algo_idx: int = 2
-        self.algorithm: TimingAlgorithm = get_algorithm(ALGORITHM_NAMES[2], config)
+        # Algorithm / phase state — default to longest_queue_first (the tuned
+        # controller) when present, else the last registered algorithm.
+        self.algo_idx: int = (
+            ALGORITHM_NAMES.index("longest_queue_first")
+            if "longest_queue_first" in ALGORITHM_NAMES
+            else len(ALGORITHM_NAMES) - 1
+        )
+        self.algorithm: TimingAlgorithm = get_algorithm(
+            ALGORITHM_NAMES[self.algo_idx], config
+        )
         self.phase_manager = PhaseManager(config, "NS")
         self.phase_manager.set_green_duration(
             self.algorithm.green_duration({}, "NS")
@@ -76,10 +92,19 @@ class Dashboard:
             self.detector = VehicleDetector(config["detection"])
         self.detections = []
 
-        # ROI
+        # ROI. Without one, per-approach counts cannot be measured and fall back
+        # to an even split of the total detections — which is NOT real data.
         self.roi_manager: Optional[ROIManager] = None
         if roi_path and os.path.exists(roi_path):
             self.roi_manager = ROIManager.from_file(roi_path)
+        self._roi_missing = self.roi_manager is None
+        if self._roi_missing:
+            print(
+                "WARNING: no ROI loaded — per-approach queue counts are ESTIMATED "
+                "(total split evenly across approaches), not measured. Pass "
+                "--roi config/synthetic_roi.json for real per-lane counts.",
+                file=sys.stderr,
+            )
 
         self.queues: Dict[str, int] = {a: 0 for a in ("north", "south", "east", "west")}
         self.queue_history: List[Dict[str, int]] = []
@@ -146,6 +171,14 @@ class Dashboard:
                 cv2.rectangle(rgb, (x1, y1), (x2, y2), (255, 200, 0), 2)
             surf = pygame.surfarray.make_surface(rgb.transpose(1, 0, 2))
             self.screen.blit(surf, r.topleft)
+            if self._roi_missing:
+                warn = self.font_sm.render(
+                    "NO ROI - counts ESTIMATED", True, (255, 80, 80))
+                bg = pygame.Surface((warn.get_width() + 8, warn.get_height() + 4))
+                bg.set_alpha(180)
+                bg.fill((0, 0, 0))
+                self.screen.blit(bg, (r.left + 4, r.top + 4))
+                self.screen.blit(warn, (r.left + 8, r.top + 6))
         else:
             pygame.draw.rect(self.screen, (20, 20, 20), r)
             lbl = self.font_md.render("No Video", True, (200, 200, 200))
@@ -199,7 +232,7 @@ class Dashboard:
         reason = self.algorithm.get_last_reason()[:68]
         self.screen.blit(self.font_sm.render(reason, True, (150, 220, 150)),
                          (r.left + 8, r.bottom - 32))
-        hint = "SPACE=pause  1/2/3=algo  Q=quit"
+        hint = f"SPACE=pause  1-{len(ALGORITHM_NAMES)}=algo  Q=quit"
         self.screen.blit(self.font_sm.render(hint, True, (100, 100, 100)),
                          (r.left + 8, r.bottom - 14))
         pygame.draw.rect(self.screen, (80, 80, 80), r, 1)
@@ -276,12 +309,10 @@ class Dashboard:
                         running = False
                     elif event.key == pygame.K_SPACE:
                         self.paused = not self.paused
-                    elif event.key == pygame.K_1:
-                        self._switch_algorithm(0)
-                    elif event.key == pygame.K_2:
-                        self._switch_algorithm(1)
-                    elif event.key == pygame.K_3:
-                        self._switch_algorithm(2)
+                    elif event.key in _ALGO_KEYS:
+                        idx = _ALGO_KEYS[event.key]
+                        if idx < len(ALGORITHM_NAMES):
+                            self._switch_algorithm(idx)
 
             # Wall-clock dt so signal timing is correct regardless of YOLO speed
             now = time.perf_counter()

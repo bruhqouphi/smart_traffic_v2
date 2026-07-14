@@ -28,13 +28,16 @@ class ROIManager:
         return inside
 
     def count_vehicles_per_approach(self, detections) -> Dict[str, int]:
+        # Each vehicle is counted at most once: the first ROI whose polygon
+        # contains its centre wins. This prevents a vehicle in overlapping ROIs
+        # from being counted for two approaches.
         counts: Dict[str, int] = {}
-        for roi in self.rois.values():
-            approach = roi["approach"]
-            polygon = roi["polygon"]
-            for det in detections:
-                if self._pip(*det.center, polygon):
+        for det in detections:
+            for roi in self.rois.values():
+                if self._pip(*det.center, roi["polygon"]):
+                    approach = roi["approach"]
                     counts[approach] = counts.get(approach, 0) + 1
+                    break
         return counts
 
     def count_vehicles_per_lane(self, detections) -> Dict[str, int]:
