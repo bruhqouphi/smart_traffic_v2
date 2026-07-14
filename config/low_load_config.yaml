@@ -1,0 +1,66 @@
+timing:
+  min_green: 10
+  max_green: 60
+  yellow_duration: 3
+  all_red_duration: 2
+  startup_lost_time: 2.0
+  headway: 2.0
+  # Tuned aging bound: at <=20s the neglected phase is served promptly, so the
+  # max-pressure (longest_queue_first) controller keeps waits bounded instead of
+  # letting the busy phase starve the other. See scripts/sweep_aging.py.
+  max_wait_threshold: 20
+
+queue_clearing:
+  short_queue_threshold: 5
+  short_queue_green: 15
+  long_queue_min_green: 20
+  long_queue_max_green: 60
+
+# Unsaturated demand: arrival rates halved vs default_config.yaml so the
+# intersection is below capacity and adaptive control can actually help.
+scenarios:
+  balanced:
+    north: 0.15
+    south: 0.15
+    east: 0.15
+    west: 0.15
+  morning_rush:
+    north: 0.25
+    south: 0.10
+    east: 0.30
+    west: 0.05
+  evening_rush:
+    north: 0.10
+    south: 0.25
+    east: 0.05
+    west: 0.30
+  asymmetric:
+    north: 0.35
+    south: 0.05
+    east: 0.20
+    west: 0.10
+
+detection:
+  vehicle_classes: [1, 2, 3, 5, 7]
+  confidence_threshold: 0.4
+  model: "yolov8n.pt"
+  frame_skip: 2
+
+visualization:
+  window_width: 1280
+  window_height: 720
+  fps: 30
+  colors:
+    red: [255, 0, 0]
+    green: [0, 255, 0]
+    yellow: [255, 255, 0]
+    background: [30, 30, 30]
+    text: [255, 255, 255]
+    bar_ns: [0, 150, 255]
+    bar_ew: [255, 150, 0]
+    roi_overlay: [0, 255, 100]
+
+metrics:
+  export_dir: "results/low_load"
+  csv_prefix: "traffic_metrics"
+  statistical_trials: 10

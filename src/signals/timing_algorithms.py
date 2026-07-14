@@ -167,10 +167,61 @@ class QueueClearingAlgorithm(TimingAlgorithm):
         return self._reason
 
 
+class LongestQueueFirstAlgorithm(QueueClearingAlgorithm):
+    """
+    Longest-queue-first (max-pressure) with aging.
+
+    The delay-minimizing counterpart to the SJF-inspired QueueClearingAlgorithm:
+    rather than serving the *shortest* queue first, always serve the phase with
+    the *largest* total queue, so the most vehicles are cleared per green and
+    phase switching (and its lost time) is minimized. Reuses the parent's aging,
+    empty-approach handling, and queue-proportional green timing.
+    """
+
+    def __init__(self, config: dict):
+        super().__init__(config)
+        self._reason = "Longest-queue-first — initialized"
+
+    def next_phase(self, queues: Dict[str, int], current_phase: str, elapsed: float) -> str:
+        other = "EW" if current_phase == "NS" else "NS"
+
+        # Aging: promote a starving phase regardless of its queue length.
+        if self._is_starving(other):
+            self._reason = (
+                f"Aging: {other} not served for "
+                f"{self._sim_time - self._last_served[other]:.0f}s — promoted"
+            )
+            return other
+
+        ns_q = self._phase_total(queues, "NS")
+        ew_q = self._phase_total(queues, "EW")
+
+        # Don't waste a green phase on an empty approach when the other has vehicles.
+        if ns_q == 0 and ew_q == 0:
+            nxt = "EW" if current_phase == "NS" else "NS"
+            self._reason = "Both empty: alternate"
+            return nxt
+        if ns_q == 0:
+            self._reason = f"NS empty; serve EW ({ew_q} veh)"
+            return "EW"
+        if ew_q == 0:
+            self._reason = f"EW empty; serve NS ({ns_q} veh)"
+            return "NS"
+
+        # Max-pressure: serve the larger queue to clear the most vehicles.
+        choice = "NS" if ns_q >= ew_q else "EW"
+        self._reason = (
+            f"Longest-queue-first: {choice} larger "
+            f"({self._phase_total(queues, choice)} veh)"
+        )
+        return choice
+
+
 ALGORITHMS = {
     "fixed": FixedTimingAlgorithm,
     "proportional": ProportionalTimingAlgorithm,
     "queue_clearing": QueueClearingAlgorithm,
+    "longest_queue_first": LongestQueueFirstAlgorithm,
 }
 
 

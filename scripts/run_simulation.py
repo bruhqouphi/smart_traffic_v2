@@ -7,7 +7,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.signals.timing_algorithms import get_algorithm
+from src.signals.timing_algorithms import ALGORITHMS, get_algorithm
 from src.simulation.sim_engine import SimEngine
 
 
@@ -15,8 +15,8 @@ def main():
     parser = argparse.ArgumentParser(description="Run a single traffic simulation.")
     parser.add_argument("--scenario", default="balanced",
                         choices=["balanced", "morning_rush", "evening_rush", "asymmetric"])
-    parser.add_argument("--algorithm", default="queue_clearing",
-                        choices=["fixed", "proportional", "queue_clearing"])
+    parser.add_argument("--algorithm", default="longest_queue_first",
+                        choices=list(ALGORITHMS))
     parser.add_argument("--duration", type=float, default=600.0,
                         help="Simulation duration in seconds")
     parser.add_argument("--seed", type=int, default=42)

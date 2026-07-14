@@ -2,6 +2,7 @@ import pytest
 
 from src.signals.timing_algorithms import (
     FixedTimingAlgorithm,
+    LongestQueueFirstAlgorithm,
     ProportionalTimingAlgorithm,
     QueueClearingAlgorithm,
     get_algorithm,
@@ -150,9 +151,70 @@ class TestQueueClearingAlgorithm:
         assert len(algo.get_last_reason()) > 0
 
 
+class TestLongestQueueFirstAlgorithm:
+    def _algo(self):
+        return LongestQueueFirstAlgorithm(CFG)
+
+    def test_is_subclass_of_queue_clearing(self):
+        # The engine dispatches aging hooks via isinstance(QueueClearingAlgorithm),
+        # so LQF must remain a subclass for those hooks to fire.
+        assert isinstance(self._algo(), QueueClearingAlgorithm)
+
+    def test_serves_larger_queue_when_both_long(self):
+        algo = self._algo()
+        q = {"north": 6, "south": 6, "east": 10, "west": 10}
+        # NS=12, EW=20 → serve EW (the larger)
+        assert algo.next_phase(q, "NS", 0) == "EW"
+
+    def test_serves_long_over_short_opposite_of_sjf(self):
+        # The defining behavioural difference from queue_clearing (SJF): given the
+        # same queue with NS short and EW long, SJF serves the SHORT phase and LQF
+        # serves the LONG one. No aging (threshold 60, fresh algo at t=0).
+        q = {"north": 4, "south": 0, "east": 10, "west": 10}  # NS=4 short, EW=20 long
+        sjf = QueueClearingAlgorithm(CFG)
+        lqf = LongestQueueFirstAlgorithm(CFG)
+        assert sjf.next_phase(q, "EW", 0) == "NS"
+        assert lqf.next_phase(q, "EW", 0) == "EW"
+
+    def test_serves_larger_when_both_short(self):
+        algo = self._algo()
+        q = {"north": 4, "south": 0, "east": 1, "west": 1}  # NS=4, EW=2, both short
+        assert algo.next_phase(q, "EW", 0) == "NS"
+
+    def test_empty_phase_not_served_over_nonempty(self):
+        algo = self._algo()
+        q = {"north": 0, "south": 0, "east": 3, "west": 2}  # NS empty
+        assert algo.next_phase(q, "NS", 0) == "EW"
+
+    def test_both_empty_alternates(self):
+        algo = self._algo()
+        assert algo.next_phase({}, "NS", 0) == "EW"
+        assert algo.next_phase({}, "EW", 0) == "NS"
+
+    def test_aging_promotes_starving_phase_over_larger_queue(self):
+        algo = self._algo()
+        algo._last_served = {"NS": 100.0, "EW": 0.0}
+        algo._sim_time = 100.0
+        # NS has the bigger queue, but EW has starved (100s > 60s) → EW promoted
+        q = {"north": 10, "south": 10, "east": 1, "west": 1}
+        assert algo.next_phase(q, "NS", 100.0) == "EW"
+
+    def test_inherits_green_duration_rule(self):
+        algo = self._algo()
+        short = {"north": 3, "south": 1, "east": 0, "west": 0}
+        long = {"north": 10, "south": 10, "east": 0, "west": 0}
+        assert algo.green_duration(short, "NS") == CFG["queue_clearing"]["short_queue_green"]
+        assert algo.green_duration(long, "NS") >= CFG["queue_clearing"]["long_queue_min_green"]
+
+    def test_reason_mentions_longest(self):
+        algo = self._algo()
+        algo.next_phase({"north": 6, "south": 6, "east": 10, "west": 10}, "NS", 0)
+        assert "Longest" in algo.get_last_reason()
+
+
 class TestGetAlgorithm:
     def test_all_names_resolve(self):
-        for name in ("fixed", "proportional", "queue_clearing"):
+        for name in ("fixed", "proportional", "queue_clearing", "longest_queue_first"):
             algo = get_algorithm(name, CFG)
             assert algo is not None
 
@@ -165,7 +227,7 @@ class TestGetAlgorithm:
             get_algorithm("nonexistent", CFG)
 
     def test_algorithms_return_valid_phase_ids(self):
-        for name in ("fixed", "proportional", "queue_clearing"):
+        for name in ("fixed", "proportional", "queue_clearing", "longest_queue_first"):
             algo = get_algorithm(name, CFG)
             phase = algo.next_phase({}, "NS", 0)
             assert phase in ("NS", "EW"), f"{name} returned invalid phase {phase!r}"

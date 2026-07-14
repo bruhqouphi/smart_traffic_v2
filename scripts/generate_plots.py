@@ -8,7 +8,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-ALGORITHMS = ["fixed", "proportional", "queue_clearing"]
+ALGORITHMS = ["fixed", "proportional", "queue_clearing", "longest_queue_first"]
 SCENARIOS = ["balanced", "morning_rush", "evening_rush", "asymmetric"]
 
 
@@ -49,12 +49,12 @@ def main():
     # 1. Grouped bar chart: avg wait time
     fig, ax = plt.subplots(figsize=(12, 6))
     x = np.arange(len(SCENARIOS))
-    w = 0.25
+    w = 0.8 / len(ALGORITHMS)
     for i, algo in enumerate(ALGORITHMS):
         vals = [row_val(algo, s, "avg_wait_mean") for s in SCENARIOS]
         errs = [row_val(algo, s, "avg_wait_std") for s in SCENARIOS]
         ax.bar(x + i * w, vals, w, label=algo, yerr=errs, capsize=4)
-    ax.set_xticks(x + w)
+    ax.set_xticks(x + w * (len(ALGORITHMS) - 1) / 2)
     ax.set_xticklabels(SCENARIOS, rotation=12)
     ax.set_ylabel("Average Wait Time (s)")
     ax.set_title("Average Wait Time by Algorithm and Scenario")

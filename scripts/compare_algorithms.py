@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.metrics.collector import run_statistical_trials
 
-ALGORITHMS = ["fixed", "proportional", "queue_clearing"]
+ALGORITHMS = ["fixed", "proportional", "queue_clearing", "longest_queue_first"]
 SCENARIOS = ["balanced", "morning_rush", "evening_rush", "asymmetric"]
 
 
