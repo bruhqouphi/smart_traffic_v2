@@ -40,9 +40,9 @@ def main():
             print(f"avg_wait={result['avg_wait']['mean']:.1f}s")
 
     # Comparison table
-    col = "{:<20} {:<16} {:>12} {:>12} {:>12} {:>8}"
-    print(f"\n{col.format('Algorithm', 'Scenario', 'AvgWait+/-std', 'MaxWait+/-std', 'Throughput', 'Cycles')}")
-    print("-" * 86)
+    col = "{:<20} {:<16} {:>12} {:>12} {:>12} {:>8} {:>9}"
+    print(f"\n{col.format('Algorithm', 'Scenario', 'AvgWait+/-std', 'MaxWait+/-std', 'Throughput', 'Cycles', 'Blocked%')}")
+    print("-" * 96)
     for algo in ALGORITHMS:
         for scenario in SCENARIOS:
             r = all_results[f"{algo}/{scenario}"]
@@ -52,6 +52,7 @@ def main():
                 f"{r['max_wait']['mean']:.1f}+/-{r['max_wait']['std']:.1f}",
                 f"{r['throughput']['mean']:.0f}",
                 f"{r['num_cycles']['mean']:.0f}",
+                f"{r['blocked_pct']['mean']:.1f}",
             ))
 
     if args.export:
@@ -63,7 +64,8 @@ def main():
         fields = ["algorithm", "scenario",
                   "avg_wait_mean", "avg_wait_std",
                   "max_wait_mean", "max_wait_std",
-                  "throughput_mean", "num_cycles_mean"]
+                  "throughput_mean", "num_cycles_mean",
+                  "blocked_mean", "blocked_pct_mean"]
         with open(cpath, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fields)
             writer.writeheader()
@@ -78,6 +80,8 @@ def main():
                         "max_wait_std": r["max_wait"]["std"],
                         "throughput_mean": r["throughput"]["mean"],
                         "num_cycles_mean": r["num_cycles"]["mean"],
+                        "blocked_mean": r["blocked"]["mean"],
+                        "blocked_pct_mean": r["blocked_pct"]["mean"],
                     })
         print(f"\nSummary CSV: {cpath}")
 

@@ -9,6 +9,29 @@ timing:
   # max-pressure (longest_queue_first) controller keeps waits bounded instead of
   # letting the busy phase starve the other. See scripts/sweep_aging.py.
   max_wait_threshold: 20
+  # Discharge rate of a single approach during green (vehicles/hour).
+  # Capacity per approach = saturation_flow * (green time / cycle time).
+  saturation_flow: 1800
+  # Seconds of the yellow interval during which vehicles still discharge.
+  # Real intersections clear 1-2 vehicles on amber; the remainder of yellow
+  # (yellow_duration - yellow_discharge_time) is clearance lost time.
+  yellow_discharge_time: 2.0
+  # Vehicles an approach can store before traffic spills back into the upstream
+  # link. 25 ~= 175 m of queue at ~7 m per vehicle. Arrivals beyond this are
+  # turned away and counted as blocked. Remove the key for unlimited storage.
+  queue_capacity: 25
+
+# Movement split of arriving vehicles, and what each movement costs in green.
+# Ghana drives on the right, so a permitted left turn yields to opposing through
+# traffic and discharges well below saturation flow; a right turn is only mildly
+# slowed. Adjustments are HCM-style saturation-flow factors in (0, 1].
+# Effective flow here = 1800 * (0.70 + 0.15*0.45 + 0.15*0.85) = 1611 veh/h.
+turning:
+  through: 0.70
+  left: 0.15
+  right: 0.15
+  left_adjustment: 0.45
+  right_adjustment: 0.85
 
 queue_clearing:
   short_queue_threshold: 5
@@ -16,29 +39,34 @@ queue_clearing:
   long_queue_min_green: 20
   long_queue_max_green: 60
 
-# Unsaturated demand: arrival rates halved vs default_config.yaml so the
-# intersection is below capacity and adaptive control can actually help.
+# Unsaturated demand: every approach stays below capacity, so adaptive control
+# has spare green to reallocate and can actually help. Rates are 30% of
+# default_config.yaml. The peak approach (0.21 veh/s) sits under the effective
+# per-approach capacity of ~0.22 veh/s (1611 veh/h effective flow x a green
+# share of ~0.49), which the `blocked` metric confirms: 0% blocked on every
+# scenario. Raising these much further pushes the rush scenarios into
+# spillback and the comparison stops being about green allocation.
 scenarios:
   balanced:
-    north: 0.15
-    south: 0.15
-    east: 0.15
-    west: 0.15
+    north: 0.09
+    south: 0.09
+    east: 0.09
+    west: 0.09
   morning_rush:
-    north: 0.25
-    south: 0.10
-    east: 0.30
-    west: 0.05
+    north: 0.15
+    south: 0.06
+    east: 0.18
+    west: 0.03
   evening_rush:
-    north: 0.10
-    south: 0.25
-    east: 0.05
-    west: 0.30
+    north: 0.06
+    south: 0.15
+    east: 0.03
+    west: 0.18
   asymmetric:
-    north: 0.35
-    south: 0.05
-    east: 0.20
-    west: 0.10
+    north: 0.21
+    south: 0.03
+    east: 0.12
+    west: 0.06
 
 detection:
   vehicle_classes: [1, 2, 3, 5, 7]

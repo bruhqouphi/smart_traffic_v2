@@ -6,6 +6,29 @@ timing:
   startup_lost_time: 2.0
   headway: 2.0
   max_wait_threshold: 60
+  # Discharge rate of a single approach during green (vehicles/hour).
+  # Capacity per approach = saturation_flow * (green time / cycle time).
+  saturation_flow: 1800
+  # Seconds of the yellow interval during which vehicles still discharge.
+  # Real intersections clear 1-2 vehicles on amber; the remainder of yellow
+  # (yellow_duration - yellow_discharge_time) is clearance lost time.
+  yellow_discharge_time: 2.0
+  # Vehicles an approach can store before traffic spills back into the upstream
+  # link. 25 ~= 175 m of queue at ~7 m per vehicle. Arrivals beyond this are
+  # turned away and counted as blocked. Remove the key for unlimited storage.
+  queue_capacity: 25
+
+# Movement split of arriving vehicles, and what each movement costs in green.
+# Ghana drives on the right, so a permitted left turn yields to opposing through
+# traffic and discharges well below saturation flow; a right turn is only mildly
+# slowed. Adjustments are HCM-style saturation-flow factors in (0, 1].
+# Effective flow here = 1800 * (0.70 + 0.15*0.45 + 0.15*0.85) = 1611 veh/h.
+turning:
+  through: 0.70
+  left: 0.15
+  right: 0.15
+  left_adjustment: 0.45
+  right_adjustment: 0.85
 
 queue_clearing:
   short_queue_threshold: 5

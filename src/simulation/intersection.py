@@ -1,5 +1,13 @@
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
+
+import numpy as np
+
+MOVEMENTS = ("through", "left", "right")
+
+# With no `turning:` block every vehicle goes straight and discharges at full
+# saturation flow — the behaviour of the model before turns were added.
+DEFAULT_SHARES = {"through": 1.0, "left": 0.0, "right": 0.0}
 
 
 @dataclass
@@ -8,6 +16,7 @@ class Vehicle:
     approach: str
     arrival_time: float
     departure_time: Optional[float] = None
+    movement: str = "through"
 
     @property
     def wait_time(self) -> Optional[float]:
@@ -16,29 +25,122 @@ class Vehicle:
         return self.departure_time - self.arrival_time
 
 
+class TurningMix:
+    """
+    How arriving vehicles split across through/left/right, and how much green
+    each movement costs.
+
+    Ghana drives on the right, so a permitted left turn must yield to opposing
+    through traffic and discharges well below saturation flow; a right turn is
+    only mildly slowed. Both are expressed as HCM-style saturation-flow
+    adjustment factors in [0, 1].
+    """
+
+    def __init__(self, config: Optional[dict] = None, seed: int = 0):
+        cfg = config or {}
+
+        shares = {m: float(cfg.get(m, DEFAULT_SHARES[m])) for m in MOVEMENTS}
+        if any(s < 0 for s in shares.values()):
+            raise ValueError("turning shares must not be negative")
+        total = sum(shares.values())
+        if total <= 0:
+            raise ValueError("turning shares must sum to a positive number")
+        # Normalise so the shares are a probability distribution even if the
+        # config author wrote percentages or numbers that do not quite sum to 1.
+        self.shares = {m: s / total for m, s in shares.items()}
+
+        self.factors = {
+            "through": 1.0,
+            "left": float(cfg.get("left_adjustment", 1.0)),
+            "right": float(cfg.get("right_adjustment", 1.0)),
+        }
+        for movement, factor in self.factors.items():
+            if not 0.0 < factor <= 1.0:
+                raise ValueError(
+                    f"{movement} saturation-flow adjustment must be in (0, 1], got {factor}"
+                )
+
+        self._rng = np.random.default_rng(seed)
+        self._probs = [self.shares[m] for m in MOVEMENTS]
+
+    def sample(self, n: int) -> List[str]:
+        """Draw n movements from the configured split."""
+        if n <= 0:
+            return []
+        return list(self._rng.choice(MOVEMENTS, size=n, p=self._probs))
+
+    @property
+    def adjustment(self) -> float:
+        """
+        Share-weighted saturation-flow adjustment: effective flow / saturation
+        flow. 1.0 when every vehicle goes straight.
+        """
+        return sum(self.shares[m] * self.factors[m] for m in MOVEMENTS)
+
+
 class ApproachQueue:
-    def __init__(self, approach: str, saturation_flow: float = 1800.0):
+    def __init__(
+        self,
+        approach: str,
+        saturation_flow: float = 1800.0,
+        capacity: Optional[int] = None,
+        movement_factors: Optional[Dict[str, float]] = None,
+    ):
         self.approach = approach
-        # vehicles per second at saturation
-        self._sat_flow_per_sec = saturation_flow / 3600.0
+        self.saturation_flow = saturation_flow
+        # Storage limit of the upstream link, in vehicles. None = unlimited.
+        self.capacity = capacity
+        self.movement_factors = dict(movement_factors or {})
+        # Seconds of green one straight-through vehicle occupies.
+        self._base_service_time = 3600.0 / saturation_flow
         self._queue: List[Vehicle] = []
         self._next_id = 0
-        self._depart_accum: float = 0.0  # fractional accumulator for sub-step departures
+        self._green_credit: float = 0.0  # seconds of discharge time banked
+        self.blocked = 0  # arrivals refused because the link was already full
 
-    def arrive(self, n: int, t: float):
-        for _ in range(n):
-            self._queue.append(Vehicle(self._next_id, self.approach, t))
+    def service_time(self, vehicle: Vehicle) -> float:
+        """
+        Green time this vehicle occupies. A turning vehicle discharges at only
+        `factor` of saturation flow, so it costs proportionally more — and
+        because the approach is a single queue, it holds up everyone behind it.
+        """
+        factor = self.movement_factors.get(vehicle.movement, 1.0)
+        return self._base_service_time / factor
+
+    @property
+    def is_full(self) -> bool:
+        return self.capacity is not None and len(self._queue) >= self.capacity
+
+    def arrive(self, n: int, t: float, movements: Optional[Sequence[str]] = None) -> int:
+        """
+        Queue up to n vehicles. Returns how many were turned away because the
+        approach had no storage left (spillback into the upstream link).
+        """
+        accepted = n
+        if self.capacity is not None:
+            accepted = max(0, min(n, self.capacity - len(self._queue)))
+
+        for i in range(accepted):
+            movement = movements[i] if movements is not None else "through"
+            self._queue.append(Vehicle(self._next_id, self.approach, t, movement=movement))
             self._next_id += 1
 
+        blocked = n - accepted
+        self.blocked += blocked
+        return blocked
+
     def depart(self, dt: float, t: float) -> List[Vehicle]:
-        self._depart_accum += self._sat_flow_per_sec * dt
-        n = int(self._depart_accum)
-        self._depart_accum -= n
+        self._green_credit += dt
         departed = []
-        for _ in range(min(n, len(self._queue))):
+        while self._queue and self._green_credit >= self.service_time(self._queue[0]):
             v = self._queue.pop(0)
+            self._green_credit -= self.service_time(v)
             v.departure_time = t
             departed.append(v)
+        if not self._queue:
+            # An empty approach banks nothing — unused green is lost, since the
+            # next arrival still has to start from rest.
+            self._green_credit = 0.0
         return departed
 
     @property
@@ -52,23 +154,40 @@ class Intersection:
     NS phase serves north+south simultaneously; EW serves east+west.
     """
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, seed: int = 0):
         t = config["timing"]
         self.startup_lost = float(t["startup_lost_time"])
         self.headway = float(t["headway"])
+        # Configs written before saturation_flow existed keep the original value.
+        self.saturation_flow = float(t.get("saturation_flow", 1800.0))
+
+        # Storage limit per approach. Absent means unlimited, as before — queues
+        # grow without bound instead of spilling back.
+        capacity = t.get("queue_capacity")
+        self.capacity: Optional[int] = None if capacity is None else int(capacity)
+        if self.capacity is not None and self.capacity <= 0:
+            raise ValueError("queue_capacity must be a positive number of vehicles")
+
+        self.turning = TurningMix(config.get("turning"), seed)
 
         self.approaches: Dict[str, ApproachQueue] = {
-            "north": ApproachQueue("north"),
-            "south": ApproachQueue("south"),
-            "east": ApproachQueue("east"),
-            "west": ApproachQueue("west"),
+            name: ApproachQueue(
+                name, self.saturation_flow, self.capacity, self.turning.factors
+            )
+            for name in ("north", "south", "east", "west")
         }
         self.departed_vehicles: List[Vehicle] = []
 
-    def arrive(self, arrivals: Dict[str, int], t: float):
+    def arrive(self, arrivals: Dict[str, int], t: float) -> Dict[str, int]:
+        """Queue arrivals; returns per-approach counts refused for lack of storage."""
+        blocked: Dict[str, int] = {}
         for approach, n in arrivals.items():
             if approach in self.approaches:
-                self.approaches[approach].arrive(n, t)
+                # Movements are drawn for every arrival, blocked or not, so the
+                # movement stream does not depend on how full the approach is.
+                movements = self.turning.sample(n)
+                blocked[approach] = self.approaches[approach].arrive(n, t, movements)
+        return blocked
 
     def depart_phase(self, phase: str, dt: float, t: float) -> List[Vehicle]:
         """Depart from both approaches of the phase simultaneously."""
@@ -98,3 +217,7 @@ class Intersection:
 
     def total_waiting(self) -> int:
         return sum(q.length for q in self.approaches.values())
+
+    @property
+    def total_blocked(self) -> int:
+        return sum(q.blocked for q in self.approaches.values())

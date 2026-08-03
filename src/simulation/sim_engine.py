@@ -24,9 +24,16 @@ class SimEngine:
         self.t = 0.0
 
         self.generator = TrafficGenerator(config, scenario, seed)
-        self.intersection = Intersection(config)
+        self.intersection = Intersection(config, seed=seed)
         self.phase_manager = PhaseManager(config, initial_phase="NS")
         self.metrics = MetricsCollector()
+
+        # Seconds of yellow still usable for discharge. Configs written before
+        # this key existed discharge on green only. Cannot exceed the interval.
+        self.yellow_discharge_time = min(
+            float(config["timing"].get("yellow_discharge_time", 0.0)),
+            self.phase_manager.yellow_duration,
+        )
 
         # Set green duration for the very first phase
         initial_green = algorithm.green_duration(self.intersection.queue_lengths(), "NS")
@@ -45,16 +52,31 @@ class SimEngine:
         self.phase_manager.request_phase_change(next_p, duration)
         self.metrics.record_signal_cycle(self.t, new_phase, self.phase_manager.green_duration)
 
+    def _is_discharging(self) -> bool:
+        """
+        Vehicles leave during GREEN, and for the first yellow_discharge_time
+        seconds of YELLOW — those already in the intersection clear on amber.
+        The phase does not change until ALL_RED ends, so the same approaches
+        are served throughout.
+        """
+        state = self.phase_manager.state
+        if state == SignalState.GREEN:
+            return True
+        if state == SignalState.YELLOW:
+            return self.phase_manager.state_elapsed < self.yellow_discharge_time
+        return False
+
     def step(self):
         if isinstance(self.algorithm, QueueClearingAlgorithm):
             self.algorithm.update_sim_time(self.t)
 
-        # Vehicles arrive on every tick
+        # Vehicles arrive on every tick; those that find their approach full
+        # are turned away (spillback) rather than joining an unbounded queue.
         arrivals = self.generator.arrivals_all(self.dt)
-        self.intersection.arrive(arrivals, self.t)
+        blocked = self.intersection.arrive(arrivals, self.t)
+        self.metrics.record_arrivals(arrivals, blocked)
 
-        # Vehicles depart only during GREEN
-        if self.phase_manager.state == SignalState.GREEN:
+        if self._is_discharging():
             departed = self.intersection.depart_phase(
                 self.phase_manager.current_phase, self.dt, self.t
             )

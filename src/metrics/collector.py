@@ -25,9 +25,22 @@ class MetricsCollector:
         self.signal_cycles: List[SignalCycleRecord] = []
         self.vehicle_waits: List[float] = []
         self.waits_by_approach: Dict[str, List[float]] = {}
+        self.arrivals = 0
+        self.blocked = 0
+        self.blocked_by_approach: Dict[str, int] = {}
 
     def record_queue_snapshot(self, t: float, queues: Dict[str, int]):
         self.queue_snapshots.append(QueueSnapshot(t, dict(queues)))
+
+    def record_arrivals(self, arrivals: Dict[str, int], blocked: Dict[str, int] = None):
+        """Count vehicles generated, and those turned away by a full approach."""
+        self.arrivals += sum(arrivals.values())
+        for approach, n in (blocked or {}).items():
+            if n:
+                self.blocked += n
+                self.blocked_by_approach[approach] = (
+                    self.blocked_by_approach.get(approach, 0) + n
+                )
 
     def record_signal_cycle(self, t: float, phase: str, green_duration: float):
         self.signal_cycles.append(SignalCycleRecord(t, phase, green_duration))
@@ -46,6 +59,10 @@ class MetricsCollector:
             "max_queue": float(np.max(all_totals)) if all_totals else 0.0,
             "throughput": len(waits),
             "num_cycles": len(self.signal_cycles),
+            "blocked": self.blocked,
+            # Share of demand that never got into the intersection because the
+            # approach was full. 0 when storage is unlimited.
+            "blocked_pct": (100.0 * self.blocked / self.arrivals) if self.arrivals else 0.0,
         }
 
     def export_csv(self, directory: str, prefix: str = "traffic_metrics") -> dict:
