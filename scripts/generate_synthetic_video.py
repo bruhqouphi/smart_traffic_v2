@@ -229,6 +229,14 @@ def draw_vehicle(canvas, v: Vehicle):
         cv2.rectangle(canvas, (x2-5,  y2-7), (x2-2,  y2-2), tl, -1)
 
 
+def _ascii(text: str) -> str:
+    """cv2.putText renders only ASCII — anything else comes out as '???'."""
+    return (text.replace("—", "-").replace("–", "-")
+                .replace("→", "->").replace("≤", "<=")
+                .replace("≥", ">=")
+                .encode("ascii", "replace").decode("ascii"))
+
+
 def draw_hud(canvas, pm, algo_name, reason, sim_t, q_counts, cycle):
     ov = canvas.copy()
     cv2.rectangle(ov, (4,4), (505,115), (0,0,0), -1)
@@ -243,7 +251,7 @@ def draw_hud(canvas, pm, algo_name, reason, sim_t, q_counts, cycle):
          f"   cycles:{cycle}"),
     ]
     for i, line in enumerate(lines):
-        cv2.putText(canvas, line, (10, 26+i*22),
+        cv2.putText(canvas, _ascii(line), (10, 26+i*22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.52, tc, 1)
 
 
@@ -258,6 +266,10 @@ def main():
     parser.add_argument("--duration",  type=float, default=120.0)
     parser.add_argument("--output",    default="data/videos/synthetic.mp4")
     parser.add_argument("--config",    default="config/default_config.yaml")
+    parser.add_argument("--no-hud", action="store_true",
+                        help="Omit the baked-in overlay. Use this for footage fed "
+                             "to the dashboard, whose own panel would otherwise "
+                             "contradict it (different algorithm, different counts).")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -348,8 +360,9 @@ def main():
 
         draw_signals(canvas, pm.get_signal_colors())
         q_display = {a: len(queues[a]) for a in APPROACHES}
-        draw_hud(canvas, pm, args.algorithm, algo.get_last_reason(),
-                 sim_t, q_display, pm.cycle_count)
+        if not args.no_hud:
+            draw_hud(canvas, pm, args.algorithm, algo.get_last_reason(),
+                     sim_t, q_display, pm.cycle_count)
 
         writer.write(canvas)
 

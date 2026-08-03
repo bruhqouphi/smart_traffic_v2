@@ -340,8 +340,15 @@ class Dashboard:
             self._draw_queue_history()
 
             if self.paused:
+                # Centred over the video quadrant, not the window — the window
+                # centre lands on the signal panel's phase/time readout.
                 ps = self.font_lg.render("PAUSED", True, (255, 200, 0))
-                self.screen.blit(ps, (self.W // 2 - ps.get_width() // 2, 8))
+                px = self.r_video.centerx - ps.get_width() // 2
+                bg = pygame.Surface((ps.get_width() + 16, ps.get_height() + 8))
+                bg.set_alpha(190)
+                bg.fill((0, 0, 0))
+                self.screen.blit(bg, (px - 8, 4))
+                self.screen.blit(ps, (px, 8))
 
             pygame.display.flip()
             self.clock.tick(self.fps)
