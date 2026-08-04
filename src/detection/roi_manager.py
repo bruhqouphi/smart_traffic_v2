@@ -1,5 +1,5 @@
 import json
-from typing import Dict, List, Tuple
+from typing import Dict, List, Set, Tuple
 
 
 class ROIManager:
@@ -39,6 +39,21 @@ class ROIManager:
                     counts[approach] = counts.get(approach, 0) + 1
                     break
         return counts
+
+    def emergency_approaches(self, detections) -> Set[str]:
+        """
+        Approaches whose ROI contains a detection flagged as an emergency
+        vehicle. Empty unless a classifier has set `is_emergency`.
+        """
+        found: Set[str] = set()
+        for det in detections:
+            if not getattr(det, "is_emergency", False):
+                continue
+            for roi in self.rois.values():
+                if self._pip(*det.center, roi["polygon"]):
+                    found.add(roi["approach"])
+                    break
+        return found
 
     def count_vehicles_per_lane(self, detections) -> Dict[str, int]:
         counts: Dict[str, int] = {}

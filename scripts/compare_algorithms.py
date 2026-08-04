@@ -23,10 +23,19 @@ def main():
     parser.add_argument("--export", action="store_true",
                         help="Export comparison CSV and per-run CSVs")
     parser.add_argument("--config", default="config/default_config.yaml")
+    parser.add_argument("--no-emergency", action="store_true",
+                        help="Disable emergency vehicles and preemption, "
+                             "whatever the config says.")
     args = parser.parse_args()
 
     with open(args.config) as f:
         config = yaml.safe_load(f)
+
+    if args.no_emergency:
+        config.setdefault("emergency", {})["enabled"] = False
+
+    from src.signals.timing_algorithms import emergency_enabled
+    show_ev = emergency_enabled(config)
 
     all_results = {}
     for algo in ALGORITHMS:
@@ -41,19 +50,44 @@ def main():
 
     # Comparison table
     col = "{:<20} {:<16} {:>12} {:>12} {:>12} {:>8} {:>9}"
-    print(f"\n{col.format('Algorithm', 'Scenario', 'AvgWait+/-std', 'MaxWait+/-std', 'Throughput', 'Cycles', 'Blocked%')}")
-    print("-" * 96)
+    header = col.format('Algorithm', 'Scenario', 'AvgWait+/-std', 'MaxWait+/-std',
+                        'Throughput', 'Cycles', 'Blocked%')
+    ev_col = "  {:>7} {:>10} {:>10}"
+    if show_ev:
+        header += ev_col.format('EVs', 'EVWait', 'Preempts')
+    print(f"\n{header}")
+    print("-" * len(header))
     for algo in ALGORITHMS:
         for scenario in SCENARIOS:
             r = all_results[f"{algo}/{scenario}"]
-            print(col.format(
+            row = col.format(
                 algo, scenario,
                 f"{r['avg_wait']['mean']:.1f}+/-{r['avg_wait']['std']:.1f}",
                 f"{r['max_wait']['mean']:.1f}+/-{r['max_wait']['std']:.1f}",
                 f"{r['throughput']['mean']:.0f}",
                 f"{r['num_cycles']['mean']:.0f}",
                 f"{r['blocked_pct']['mean']:.1f}",
-            ))
+            )
+            if show_ev:
+                row += ev_col.format(
+                    f"{r['ev_served']['mean']:.1f}",
+                    f"{r['avg_ev_wait']['mean']:.1f}",
+                    f"{r['preemptions']['mean']:.1f}",
+                )
+            print(row)
+
+    if show_ev:
+        # The headline EVP number: how much shorter an emergency vehicle's wait
+        # is than an ordinary vehicle's, under the same controller and demand.
+        print("\nEmergency-vehicle response (all scenarios pooled):")
+        for algo in ALGORITHMS:
+            ev = [all_results[f"{algo}/{s}"]["avg_ev_wait"]["mean"] for s in SCENARIOS]
+            ordinary = [all_results[f"{algo}/{s}"]["avg_wait"]["mean"] for s in SCENARIOS]
+            ev_mean = sum(ev) / len(ev)
+            ord_mean = sum(ordinary) / len(ordinary)
+            saved = (100.0 * (ord_mean - ev_mean) / ord_mean) if ord_mean else 0.0
+            print(f"  {algo:<22} EV {ev_mean:5.1f}s vs ordinary {ord_mean:5.1f}s "
+                  f"({saved:+.0f}%)")
 
     if args.export:
         export_dir = config["metrics"]["export_dir"]
@@ -65,7 +99,9 @@ def main():
                   "avg_wait_mean", "avg_wait_std",
                   "max_wait_mean", "max_wait_std",
                   "throughput_mean", "num_cycles_mean",
-                  "blocked_mean", "blocked_pct_mean"]
+                  "blocked_mean", "blocked_pct_mean",
+                  "ev_served_mean", "avg_ev_wait_mean", "max_ev_wait_mean",
+                  "preemptions_mean"]
         with open(cpath, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fields)
             writer.writeheader()
@@ -82,16 +118,20 @@ def main():
                         "num_cycles_mean": r["num_cycles"]["mean"],
                         "blocked_mean": r["blocked"]["mean"],
                         "blocked_pct_mean": r["blocked_pct"]["mean"],
+                        "ev_served_mean": r["ev_served"]["mean"],
+                        "avg_ev_wait_mean": r["avg_ev_wait"]["mean"],
+                        "max_ev_wait_mean": r["max_ev_wait"]["mean"],
+                        "preemptions_mean": r["preemptions"]["mean"],
                     })
         print(f"\nSummary CSV: {cpath}")
 
         # Detailed per-algo/scenario CSVs (single deterministic run each)
-        from src.signals.timing_algorithms import get_algorithm
+        from src.signals.timing_algorithms import build_controller
         from src.simulation.sim_engine import SimEngine
 
         for algo in ALGORITHMS:
             for scenario in SCENARIOS:
-                a = get_algorithm(algo, config)
+                a = build_controller(algo, config)
                 engine = SimEngine(config, a, scenario=scenario, seed=0)
                 m = engine.run(args.duration)
                 m.export_csv(export_dir, f"{algo}_{scenario}")

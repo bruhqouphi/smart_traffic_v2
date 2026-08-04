@@ -6,6 +6,11 @@ signal-timing controllers against each other in a software simulation to ask a
 concrete question: **on a two-phase junction, what actually reduces average
 wait — the order in which you pick phases, or how you allocate green time?**
 
+On top of those controllers sits **emergency-vehicle preemption**: an ambulance
+detected on any approach takes priority over whatever the controller was going
+to do, and clears in ~5 s instead of the ~24–30 s an ordinary vehicle waits.
+See [Emergency-vehicle priority](#emergency-vehicle-priority).
+
 No hardware required — everything runs in simulation, including a synthetic
 video generator so the full vision pipeline can be exercised without a camera
 or real footage.
@@ -44,6 +49,82 @@ All algorithms return phase IDs (`"NS"` / `"EW"`), enforced by an abstract base
 class; `longest_queue_first` is implemented as a subclass of `queue_clearing`
 that overrides only the phase-selection step.
 
+## Emergency-vehicle priority
+
+Ambulances, fire engines and police vehicles override all four controllers.
+`EmergencyPreemptionController` is a **wrapper**, not a fifth algorithm — it
+decorates any base controller and intercepts phase selection only while an
+emergency vehicle (EV) is waiting. Every other decision passes straight through,
+so all four controllers gain preemption without duplicating a line of logic, and
+the with/without comparison is a like-for-like test of the same base strategy.
+
+**The sequence.** Once an EV is detected on a phase:
+
+1. That phase becomes the target. If it is already green, the green is *held*
+   (up to `max_preempt_green`) so the interval cannot expire under the EV.
+2. If the conflicting phase is green, its green is **truncated** — but not
+   before `min_green_before_preempt` seconds have been served, because dropping
+   a green instantly strands vehicles already entering the junction. Yellow and
+   all-red then run **in full**: preemption skips the *wait*, never the
+   clearance.
+3. The target is held until the last EV departs, plus `clearance_extension`
+   seconds, after which control returns to the base controller.
+
+If both phases have an EV, the one already being served wins, so the controller
+finishes clearing it rather than oscillating.
+
+**In the queue model** an EV jumps to the head of its approach (ordinary traffic
+pulls aside for a siren) and is exempt from `queue_capacity` — it is never
+turned away as spillback. This is the priority-scheduling tier; the signal-level
+preemption sits on top of it.
+
+**Detection** is the honest weak point. COCO has no ambulance class, so
+`EmergencyClassifier` identifies an EV by its light bar: saturated red and
+saturated blue that are each a *small* share of the vehicle and present in
+*comparable* amounts. The naive test — "does the box contain red and blue?" —
+was tried first and flagged every blue car on the east approach, because blue
+cars have red tail lights. Adjacency does not fix it either (the tail lights
+touch the bodywork). Relative area does: a light bar is balanced, paintwork is
+not. Measured on 11,473 vehicle detections of EV-free synthetic footage: **0
+false positives**, while ambulances are flagged on all four approaches in both
+flash states.
+
+### Results
+
+5 seeded trials × 600 s, `config/low_load_config.yaml`, pooled over all four
+scenarios. EV response time against the wait an ordinary vehicle sees under the
+same controller and demand:
+
+| Algorithm             | EV wait | Ordinary wait | Reduction |
+|-----------------------|:-------:|:-------------:|:---------:|
+| `fixed`               | 4.3 s   | 30.0 s        | **−86%**  |
+| `proportional`        | 5.3 s   | 27.4 s        | **−81%**  |
+| `queue_clearing`      | 5.3 s   | 25.9 s        | **−80%**  |
+| `longest_queue_first` | 5.2 s   | 23.9 s        | **−78%**  |
+
+The reduction is largest under `fixed` precisely because `fixed` is the worst
+baseline to be stuck behind — preemption is worth most where the underlying
+controller is least responsive.
+
+**What it costs everyone else.** Preemption is not free: every truncated green
+throws away lost time (`yellow` + `all_red`) and serves a phase out of turn.
+Average wait for ordinary traffic, EVP off vs on:
+
+| Scenario     | fixed | proportional | queue_clearing | longest_queue_first |
+|--------------|:-----:|:------------:|:--------------:|:-------------------:|
+| balanced     | +0.6  | +1.8         | +1.9           | +0.9                |
+| morning_rush | +3.0  | +4.6         | +6.4           | +3.4                |
+| evening_rush | +2.6  | +3.9         | +3.4           | +3.1                |
+| asymmetric   | +2.9  | +4.0         | +3.3           | −0.2                |
+
+Seconds added to average wait, at an EV rate of 0.002/s per approach (~4 EVs per
+600 s run). So roughly **1–6 s of extra delay for everyone buys a 78–86%
+reduction in emergency response time** — the trade the proposal's
+life-saving argument rests on, now measured rather than asserted.
+
+Turn it all off with `--no-emergency` on any script, or by removing the
+`emergency:` block from the config.
+
 ## Project structure
 
 ```
@@ -53,8 +134,10 @@ smart_traffic_v2/
 │   ├── low_load_config.yaml     # below-capacity demand + tuned aging bound (see Findings)
 │   └── synthetic_roi.json        # ROI polygons for the synthetic video
 ├── src/
-│   ├── detection/                # YOLOv8 + color detectors, video input, ROI counting
-│   ├── signals/                  # timing_algorithms.py (the 4 controllers) + phase state machine
+│   ├── detection/                # YOLOv8 + color detectors, video input, ROI counting,
+│   │                             #   emergency_classifier.py (light-bar EV detection)
+│   ├── signals/                  # timing_algorithms.py (the 4 controllers + the
+│   │                             #   emergency preemption wrapper) + phase state machine
 │   ├── simulation/               # Poisson arrivals, queue model, time-stepped engine
 │   ├── metrics/                  # logging, summary stats, CSV export, statistical runner
 │   └── visualization/            # Pygame real-time dashboard
@@ -99,6 +182,13 @@ python scripts/generate_plots.py --config config/low_load_config.yaml --output-d
 # Generate a synthetic traffic video (no camera needed)
 python scripts/generate_synthetic_video.py --scenario morning_rush --duration 120 --output data/videos/synthetic.mp4
 
+# Demo footage with frequent ambulances. The config rate is realistic but rare
+# (~1 EV per 8 min per approach), so raise it for a defence demo.
+python scripts/generate_synthetic_video.py --scenario balanced --duration 120 --emergency-rate 0.01 --no-hud --output data/videos/synthetic_ev.mp4
+
+# Any script can run the pre-emergency baseline with --no-emergency
+python scripts/compare_algorithms.py --trials 5 --no-emergency --config config/low_load_config.yaml
+
 # Launch the live Pygame dashboard on a video. With --detector color the bundled
 # synthetic ROI is loaded automatically so per-approach counts are real; pass
 # --roi <file> to override. The dashboard uses config/low_load_config.yaml
@@ -130,6 +220,13 @@ oversaturated. See [Findings](#findings).
 `SPACE` pause · `1`/`2`/`3`/`4` switch algorithm (fixed / proportional /
 queue_clearing / longest_queue_first) · `Q` quit.
 
+When an ambulance is detected the dashboard shows a flashing red alert band
+across the top, draws that vehicle's bounding box in red labelled `EMERGENCY`,
+and the signal panel's `EVP` line switches from `armed` to
+`PREEMPTING <phase>` with a running count. Preemption needs an ROI file to know
+*which* approach the EV is on — without one it stays off, and the existing
+"NO ROI — counts ESTIMATED" warning applies.
+
 ## How the simulation works
 
 - **Traffic generator** — Poisson arrivals per approach at the configured rates.
@@ -153,17 +250,31 @@ queue_clearing / longest_queue_first) · `Q` quit.
   away and counted as `blocked` — the model's stand-in for spillback into the
   upstream link. This is what stops oversaturated runs from growing unbounded
   queues, and it makes **throughput**, not wait time, the thing to compare there.
+- **Emergency vehicles** — arrive as a separate Poisson stream at
+  `emergency.arrival_rate` per approach, on top of ordinary demand and drawn
+  from their own RNG so enabling preemption cannot perturb the baseline arrival
+  sequence. They jump to the head of their queue and ignore `queue_capacity`.
 - **Engine** — a time-stepped loop (`dt = 0.1s`) drives the full
   `GREEN → YELLOW → ALL_RED → GREEN` state machine, feeds per-approach queue
   lengths to the active timing algorithm, and records metrics.
 - **Metrics** — average/max wait time, average/max queue, throughput, cycle
-  counts, and blocked vehicles (count and % of demand), exported to CSV. The
-  statistical runner repeats N seeded trials and reports mean ± std.
+  counts, blocked vehicles (count and % of demand), and emergency-vehicle
+  response (count, average/max EV wait, preemptions triggered), exported to CSV.
+  The statistical runner repeats N seeded trials and reports mean ± std.
 
 ## Findings
 
 Each controller was run for 5 seeded trials × 600 s across all four scenarios
 (`scripts/compare_algorithms.py --trials 5 --export`). Average wait time (s):
+
+> **These tables are the `--no-emergency` baseline.** The green-allocation
+> question is about ordinary traffic, so preemption is switched off here to keep
+> it out of the comparison. Reproduce them with
+> `--no-emergency`, or by removing the `emergency:` block from the config —
+> both give these numbers exactly, and that is pinned by a test. With
+> preemption on, every controller pays the 1–6 s shown in
+> [Emergency-vehicle priority](#emergency-vehicle-priority), and the *ranking*
+> below is unchanged.
 
 ### Below capacity — where green allocation is decided
 
@@ -258,7 +369,16 @@ the shortest queue on the same input). Also covers `saturation_flow` wiring,
 amber discharge, queue capacity and spillback accounting, and turning movements
 (share normalisation, config validation, the extra green a turn costs, and the
 head-of-line blocking it causes) — including the fallbacks that keep configs
-predating those keys reproducing the original numbers. **97 tests, all passing.**
+predating those keys reproducing the original numbers.
+
+Emergency-vehicle priority adds tests for queue jumping and capacity exemption,
+EV arrival generation, the preemption controller (target selection, overriding
+even the aging rule, clearance-extension release, hook delegation), green
+truncation and the guarantee that yellow and all-red still run in full, the
+light-bar classifier — including regressions for the blue-car-with-red-tail-
+lights false positive that the first version produced — and the end-to-end
+guarantee that a config with no `emergency:` block reproduces the pre-emergency
+results *bit-identically*. **166 tests, all passing.**
 
 ## Configuration
 
@@ -286,10 +406,22 @@ adjustments are HCM-style saturation-flow factors in (0, 1]:
 | `left_adjustment`  | 0.45 | A permitted left turn yields to opposing through traffic, so it discharges at 45% of saturation flow. |
 | `right_adjustment` | 0.85 | A right turn is only mildly slowed. |
 
+…and the `emergency:` block, which controls preemption:
+
+| Key | Default | Meaning |
+|-----|:-------:|---------|
+| `enabled`                  | `true`  | Master switch. Absent block or `false` = no EVs generated, no controller wrapped. |
+| `arrival_rate`             | 0.002 /s | EV arrivals per approach, on top of ordinary demand. ~1 per 8 min per approach. |
+| `min_green_before_preempt` | 5.0 s   | Safety floor — an in-progress green must run this long before preemption truncates it. |
+| `max_preempt_green`        | 45.0 s  | Hard cap on a preemption green, in case an EV never clears. |
+| `clearance_extension`      | 3.0 s   | Hold after the last EV departs, so it is clear of the junction. |
+
 Every one of these falls back to the model's historical behaviour when absent
-from a config — `1800.0`, `0.0`, unlimited storage, and all-through at full
-saturation flow — so older config files still reproduce the numbers they
-originally produced. That fallback is pinned by tests.
+from a config — `1800.0`, `0.0`, unlimited storage, all-through at full
+saturation flow, and no emergency vehicles at all — so older config files still
+reproduce the numbers they originally produced. That fallback is pinned by
+tests, including one asserting that a run with `emergency:` removed is
+*bit-identical* to one with `enabled: false`.
 
 ## Known limitations
 
@@ -319,6 +451,29 @@ the results:
    to clear than `headway × length` suggests. This mismatch between assumed and
    actual discharge is realistic, but it means none of the controllers here can
    exploit turn composition even in principle.
+6. **Emergency-vehicle *detection* is a heuristic, not a trained classifier.**
+   This is the weakest link in the whole pipeline and the one to be most careful
+   about claiming. `EmergencyClassifier` looks for a balanced red-and-blue light
+   bar; it therefore:
+   - **misses a fire engine**, whose red bodywork swamps the balance test — the
+     same rule that stops blue cars false-positiving causes this false negative;
+   - misses any EV whose lights are off, or an unmarked police vehicle;
+   - has been validated only on synthetic footage, where the light bar is drawn
+     with known colours. The 0-false-positive figure quoted above is a property
+     of that footage, **not** a claim about real CCTV.
+
+   Everything downstream is indifferent to *how* the flag was set, so replacing
+   this with a YOLO model fine-tuned on an emergency-vehicle dataset means
+   rewriting one file and no others. That is the single highest-value next step
+   for the vision half of the project.
+7. **An EV jumps its queue instantly and is never blocked.** Real traffic takes
+   time to pull aside, and a genuinely gridlocked approach may have nowhere to
+   pull aside *to*. The model gives the EV a free path to the stop line, so the
+   reported response times are a **lower bound** — the signal-side benefit of
+   preemption, without the vehicle-side cost of getting through the queue.
+8. **Preemption is measured on an isolated junction.** There is no upstream
+   signal to hold traffic back and no green wave along the EV's route, which is
+   where most of the real-world benefit of a corridor EVP system comes from.
 
 ## Stack
 

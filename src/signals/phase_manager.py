@@ -42,6 +42,31 @@ class PhaseManager:
         self._pending_phase = next_phase
         self._pending_green_duration = float(green_duration)
 
+    def truncate_green(self, min_elapsed: float = 0.0) -> bool:
+        """
+        End the current green as early as `min_elapsed` seconds into it.
+
+        Used by emergency preemption to cut a conflicting green short. Yellow
+        and all-red still run in full — this shortens the wait for the next
+        phase, it never shortens clearance. A no-op outside GREEN (the signal is
+        already mid-transition) and never *extends* a green that was going to
+        end sooner. Returns True if the green was actually shortened.
+        """
+        if self.state != SignalState.GREEN:
+            return False
+        target = max(float(min_elapsed), self.state_elapsed)
+        if target >= self.green_duration:
+            return False
+        self.green_duration = target
+        return True
+
+    def hold_green(self, duration: float):
+        """
+        Extend the current green to at least `duration` seconds so it cannot
+        expire while an emergency vehicle is still discharging.
+        """
+        self.green_duration = max(self.green_duration, float(duration))
+
     def step(self, dt: float) -> bool:
         """Advance state machine by dt seconds. Returns True on phase change."""
         self.state_elapsed += dt

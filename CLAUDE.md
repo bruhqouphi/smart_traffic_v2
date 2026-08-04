@@ -11,6 +11,11 @@ Headline finding: green-time allocation is the lever; phase-selection heuristics
 collapse to prompt alternation under a tight aging bound. See `README.md` for the
 full findings table.
 
+Emergency-vehicle preemption sits on top of all four controllers and delivers a
+78–86% cut in EV response time for 1–6 s of extra delay to everyone else. It is
+a *wrapper* (`EmergencyPreemptionController`), not a fifth algorithm — see
+`README.md` → Emergency-vehicle priority.
+
 Everything runs in simulation. No hardware required.
 
 ## Commands
@@ -18,12 +23,23 @@ Everything runs in simulation. No hardware required.
 ```powershell
 .\.venv\Scripts\Activate.ps1
 
-python -m pytest tests/ -q                 # 97 tests
+python -m pytest tests/ -q                 # 166 tests
 python scripts/run_simulation.py --scenario balanced --algorithm longest_queue_first --duration 600 --seed 42
 python scripts/compare_algorithms.py --trials 5 --export --config config/low_load_config.yaml
 python scripts/sweep_aging.py --trials 5
 python scripts/run_dashboard.py data/videos/synthetic.mp4 --detector color
+
+# Emergency-vehicle demo footage (config rate is realistic but rare)
+python scripts/generate_synthetic_video.py --scenario balanced --duration 120 --emergency-rate 0.01 --no-hud --output data/videos/synthetic_ev.mp4
+
+# The pre-emergency baseline — every script takes --no-emergency
+python scripts/compare_algorithms.py --trials 5 --no-emergency --config config/low_load_config.yaml
 ```
+
+Build controllers with `build_controller(name, config)`, **not**
+`get_algorithm`. The former applies the emergency wrapper when the config
+enables it; the latter deliberately returns the bare controller and is for tests
+and internal use.
 
 All parameters live in `config/*.yaml`. Edit config, not code — there should be no
 magic numbers in source.
@@ -72,6 +88,8 @@ classes from `timing_algorithms.py`.
   - live per-approach vehicle counts
   - keys `1`–`4` for hot-swapping algorithms mid-demo
   - on-screen readout of current phase / green time remaining / active algorithm
+  - the flashing emergency alert band, red `EMERGENCY` bounding boxes, and the
+    `EVP: armed | PREEMPTING <phase>` status line
 
 ## matplotlib is for thesis numbers only
 
@@ -96,6 +114,14 @@ classes from `timing_algorithms.py`.
 Every one of these keys falls back to the model's pre-existing behaviour when
 absent from a config, and that fallback is pinned by tests — so old configs
 still reproduce the numbers they originally produced. Preserve this property.
+**The `emergency:` block follows the same rule**: removing it (or setting
+`enabled: false`) must reproduce the pre-preemption results bit-identically, and
+`TestBackwardCompatibility` in `tests/test_emergency.py` asserts exactly that.
+EVs are drawn from a separate RNG stream for the same reason — enabling
+preemption must never perturb the ordinary Poisson arrival sequence.
+
+Note that the Findings tables in `README.md` are the `--no-emergency` baseline.
+If you re-measure them, pass that flag or the numbers will not match.
 
 Note: `config/low_load_config.yaml` rates were retuned to 30% of
 `default_config.yaml` when turning movements cut effective flow to 1611 veh/h.
@@ -106,3 +132,22 @@ those rates.
 Remaining known limitations are documented in `README.md` → Known limitations.
 The most interesting extension is protected turn phases (>2 phases), which would
 give the phase-selection heuristics a real choice to make.
+
+## Emergency-vehicle detection — be honest about this one
+
+`src/detection/emergency_classifier.py` is a **light-bar heuristic, not a
+trained classifier**, because COCO has no ambulance class. It looks for
+saturated red and blue that are each a small share of the vehicle and balanced
+in area. Do not describe it as YOLO-based emergency detection.
+
+Two things were learned the hard way and must not be undone:
+
+- Testing only "are red and blue both present?" flags every blue car (they have
+  red tail lights). Measured: it fired on 675 of 2233 ordinary detections.
+- Requiring the colours be *adjacent* does not help either — tail lights touch
+  the bodywork. Only **relative area** separates the cases.
+
+It also misses fire engines (red bodywork swamps the balance test) and has been
+validated only on synthetic footage. Replacing it with a fine-tuned YOLO model
+is the highest-value next step for the vision half, and touches only this file —
+nothing downstream cares how `Detection.is_emergency` was set.

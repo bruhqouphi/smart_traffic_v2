@@ -7,7 +7,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.signals.timing_algorithms import ALGORITHMS, get_algorithm
+from src.signals.timing_algorithms import ALGORITHMS, build_controller
 from src.simulation.sim_engine import SimEngine
 
 
@@ -23,12 +23,19 @@ def main():
     parser.add_argument("--export", action="store_true",
                         help="Export metrics to CSV files")
     parser.add_argument("--config", default="config/default_config.yaml")
+    parser.add_argument("--no-emergency", action="store_true",
+                        help="Disable emergency vehicles and preemption for "
+                             "this run, whatever the config says. Use it to "
+                             "measure the baseline the EVP result is against.")
     args = parser.parse_args()
 
     with open(args.config) as f:
         config = yaml.safe_load(f)
 
-    algo = get_algorithm(args.algorithm, config)
+    if args.no_emergency:
+        config.setdefault("emergency", {})["enabled"] = False
+
+    algo = build_controller(args.algorithm, config)
     engine = SimEngine(config, algo, scenario=args.scenario, seed=args.seed)
     metrics = engine.run(args.duration)
     summary = metrics.summary()

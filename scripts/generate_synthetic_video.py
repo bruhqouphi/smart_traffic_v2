@@ -52,6 +52,15 @@ VEH_CLR = {
 }
 SIG_CLR = {"green": (0,210,0), "yellow": (0,210,210), "red": (20,20,195)}
 
+# Emergency vehicle livery (BGR). The body is a saturated fluorescent lime so
+# the saturation-threshold detector picks the whole vehicle up as ONE blob —
+# a white ambulance body would fall below the saturation floor and only the
+# light bar would be found. The red and blue bars on top are what
+# EmergencyClassifier keys on.
+EV_BODY = ( 40, 235, 190)   # fluorescent lime-yellow
+EV_RED  = ( 40,  40, 240)
+EV_BLUE = (240,  70,  40)
+
 APPROACH_PHASE = {"north":"NS","south":"NS","east":"EW","west":"EW"}
 APPROACHES     = ["north","south","east","west"]
 
@@ -61,10 +70,11 @@ APPROACHES     = ["north","south","east","west"]
 class Vehicle:
     """Single animated vehicle with entering / queued / sliding / departing states."""
 
-    def __init__(self, approach: str, slot: int):
-        self.approach = approach
-        self.slot     = slot
-        self.state    = "entering"
+    def __init__(self, approach: str, slot: int, is_emergency: bool = False):
+        self.approach     = approach
+        self.slot         = slot
+        self.state        = "entering"
+        self.is_emergency = is_emergency
 
         # Start at edge of frame
         if   approach == "north": self.x, self.y = float(LANE_CX["north"]), float(-VH["north"])
@@ -189,7 +199,49 @@ def draw_signals(canvas, signal_colors: dict):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, (8,8,8), 1)
 
 
-def draw_vehicle(canvas, v: Vehicle):
+def draw_emergency_vehicle(canvas, v: Vehicle, flash_on: bool):
+    """
+    Ambulance: fluorescent body with a two-tone light bar across the roof.
+    The bar alternates red/blue with `flash_on` so it reads as flashing on
+    screen — but BOTH colours are always painted somewhere on the vehicle, so
+    EmergencyClassifier fires on every frame rather than every other one.
+    """
+    cx, cy = v.x, v.y
+    vw, vh = VW[v.approach], VH[v.approach]
+    # Slightly larger than a car, as an ambulance is.
+    vw, vh = int(vw * 1.15), int(vh * 1.15)
+    x1, y1 = int(cx - vw/2), int(cy - vh/2)
+    x2, y2 = int(cx + vw/2), int(cy + vh/2)
+
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), EV_BODY, -1)
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), (12, 12, 12), 1)
+
+    first, second = (EV_RED, EV_BLUE) if flash_on else (EV_BLUE, EV_RED)
+    if v.approach in ("north", "south"):
+        # Vertical vehicle — bar runs left/right across the roof.
+        by1, by2 = int(cy - vh * 0.16), int(cy + vh * 0.16)
+        mid = (x1 + x2) // 2
+        cv2.rectangle(canvas, (x1 + 2, by1), (mid,     by2), first,  -1)
+        cv2.rectangle(canvas, (mid,     by1), (x2 - 2, by2), second, -1)
+    else:
+        # Horizontal vehicle — bar runs top/bottom across the roof.
+        bx1, bx2 = int(cx - vw * 0.16), int(cx + vw * 0.16)
+        mid = (y1 + y2) // 2
+        cv2.rectangle(canvas, (bx1, y1 + 2), (bx2, mid),     first,  -1)
+        cv2.rectangle(canvas, (bx1, mid),    (bx2, y2 - 2), second, -1)
+
+    # White cross, so it is unmistakably an ambulance to a human viewer.
+    ccx, ccy = int(cx), int(cy)
+    arm = max(3, int(min(vw, vh) * 0.18))
+    cv2.line(canvas, (ccx - arm, ccy), (ccx + arm, ccy), (255, 255, 255), 2)
+    cv2.line(canvas, (ccx, ccy - arm), (ccx, ccy + arm), (255, 255, 255), 2)
+
+
+def draw_vehicle(canvas, v: Vehicle, flash_on: bool = True):
+    if v.is_emergency:
+        draw_emergency_vehicle(canvas, v, flash_on)
+        return
+
     cx, cy = v.x, v.y
     vw, vh = VW[v.approach], VH[v.approach]
     x1, y1 = int(cx - vw/2), int(cy - vh/2)
@@ -237,6 +289,15 @@ def _ascii(text: str) -> str:
                 .encode("ascii", "replace").decode("ascii"))
 
 
+def draw_preempt_banner(canvas, phase: str, flash_on: bool):
+    """Flashing strip across the top of the frame while preemption is active."""
+    bg = (30, 30, 210) if flash_on else (25, 25, 130)
+    cv2.rectangle(canvas, (W - 430, 4), (W - 8, 40), bg, -1)
+    cv2.rectangle(canvas, (W - 430, 4), (W - 8, 40), (245, 245, 245), 1)
+    cv2.putText(canvas, _ascii(f"** EMERGENCY PREEMPTION - {phase} **"),
+                (W - 418, 29), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 2)
+
+
 def draw_hud(canvas, pm, algo_name, reason, sim_t, q_counts, cycle):
     ov = canvas.copy()
     cv2.rectangle(ov, (4,4), (505,115), (0,0,0), -1)
@@ -262,10 +323,18 @@ def main():
     parser.add_argument("--scenario",  default="balanced",
                         choices=["balanced","morning_rush","evening_rush","asymmetric"])
     parser.add_argument("--algorithm", default="queue_clearing",
-                        choices=["fixed","proportional","queue_clearing"])
+                        choices=["fixed","proportional","queue_clearing",
+                                 "longest_queue_first"])
     parser.add_argument("--duration",  type=float, default=120.0)
     parser.add_argument("--output",    default="data/videos/synthetic.mp4")
     parser.add_argument("--config",    default="config/default_config.yaml")
+    parser.add_argument("--emergency-rate", type=float, default=None,
+                        help="Override emergency.arrival_rate (EVs/second per "
+                             "approach). The config default is realistic but "
+                             "rare; raise it to ~0.02 for demo footage where an "
+                             "ambulance shows up every few seconds.")
+    parser.add_argument("--no-emergency", action="store_true",
+                        help="No emergency vehicles and no preemption.")
     parser.add_argument("--no-hud", action="store_true",
                         help="Omit the baked-in overlay. Use this for footage fed "
                              "to the dashboard, whose own panel would otherwise "
@@ -275,11 +344,21 @@ def main():
     with open(args.config) as f:
         config = yaml.safe_load(f)
 
-    from src.signals.timing_algorithms import get_algorithm, QueueClearingAlgorithm
+    if args.no_emergency:
+        config.setdefault("emergency", {})["enabled"] = False
+    elif args.emergency_rate is not None:
+        config.setdefault("emergency", {})["enabled"] = True
+        config["emergency"]["arrival_rate"] = args.emergency_rate
+
+    from src.signals.timing_algorithms import (
+        EmergencyPreemptionController, build_controller,
+    )
     from src.signals.phase_manager import PhaseManager, SignalState
+    from src.simulation.intersection import APPROACH_PHASE as PHASE_OF
     from src.simulation.traffic_generator import TrafficGenerator
 
-    algo = get_algorithm(args.algorithm, config)
+    algo = build_controller(args.algorithm, config)
+    preemption = algo if isinstance(algo, EmergencyPreemptionController) else None
     pm   = PhaseManager(config, "NS")
     gen  = TrafficGenerator(config, args.scenario, seed=42)
     pm.set_green_duration(algo.green_duration({a:0 for a in APPROACHES}, "NS"))
@@ -289,13 +368,36 @@ def main():
     queues: dict = {a: [] for a in APPROACHES}
 
     def on_phase_change(new_phase: str):
-        if isinstance(algo, QueueClearingAlgorithm):
-            algo.record_served(new_phase)
+        algo.record_served(new_phase)
         q_counts = {a: len(queues[a]) for a in APPROACHES}
         nxt = algo.next_phase(q_counts, new_phase, sim_t)
         pm.request_phase_change(nxt, algo.green_duration(q_counts, nxt))
 
     pm.on_phase_change(on_phase_change)
+
+    def emergency_phases() -> set:
+        return {PHASE_OF[a] for a in APPROACHES
+                if any(v.is_emergency for v in queues[a])}
+
+    def service_emergency():
+        """Mirror of SimEngine._service_emergency for the rendered video."""
+        if preemption is None:
+            return
+        was = preemption.is_preempting
+        preemption.notify_emergency(emergency_phases(), pm.current_phase)
+        if preemption.is_preempting:
+            target = preemption.target_phase
+            if pm.current_phase == target:
+                if pm.state == SignalState.GREEN:
+                    pm.hold_green(preemption.max_preempt_green)
+            else:
+                pm.request_phase_change(target, preemption.max_preempt_green)
+                pm.truncate_green(preemption.min_green_before_preempt)
+        elif was:
+            q_counts = {a: len(queues[a]) for a in APPROACHES}
+            nxt = algo.next_phase(q_counts, pm.current_phase, sim_t)
+            pm.request_phase_change(nxt, algo.green_duration(q_counts, nxt))
+            pm.truncate_green(0.0)
 
     depart_accum = {a: 0.0 for a in APPROACHES}
     DEPART_RATE  = 0.5   # vehicles/second during green
@@ -312,8 +414,7 @@ def main():
     for fi in range(total):
         q_counts = {a: len(queues[a]) for a in APPROACHES}
 
-        if isinstance(algo, QueueClearingAlgorithm):
-            algo.update_sim_time(sim_t)
+        algo.update_sim_time(sim_t)
 
         # ── Arrivals ──────────────────────────────────────────────────────
         for approach, n in gen.arrivals_all(DT).items():
@@ -321,6 +422,19 @@ def main():
                 slot = len(queues[approach])
                 if slot < MAX_SLOTS:
                     queues[approach].append(Vehicle(approach, slot))
+
+        # ── Emergency arrivals — jump to the head of the queue ────────────
+        for approach in gen.emergency_arrivals(DT):
+            ev = Vehicle(approach, 0, is_emergency=True)
+            insert_at = 0
+            while (insert_at < len(queues[approach])
+                   and queues[approach][insert_at].is_emergency):
+                insert_at += 1
+            queues[approach].insert(insert_at, ev)
+            for i, v in enumerate(queues[approach]):
+                v.set_slot(i)
+
+        service_emergency()
 
         # ── Departures (green phase) ───────────────────────────────────────
         sig = pm.get_signal_colors()
@@ -353,16 +467,27 @@ def main():
         # ── Render ────────────────────────────────────────────────────────
         draw_road(canvas)
 
-        # Draw queued/sliding/entering vehicles (back to front so front is on top)
+        # Light bars alternate at ~4 Hz so the ambulance reads as flashing.
+        flash_on = (fi // max(1, FPS // 8)) % 2 == 0
+
+        # Draw queued/sliding/entering vehicles (back to front so front is on
+        # top); emergency vehicles go last so they are never occluded.
         for approach in APPROACHES:
             for v in reversed(queues[approach]):
-                draw_vehicle(canvas, v)
+                if not v.is_emergency:
+                    draw_vehicle(canvas, v, flash_on)
+        for approach in APPROACHES:
+            for v in reversed(queues[approach]):
+                if v.is_emergency:
+                    draw_vehicle(canvas, v, flash_on)
 
         draw_signals(canvas, pm.get_signal_colors())
         q_display = {a: len(queues[a]) for a in APPROACHES}
         if not args.no_hud:
             draw_hud(canvas, pm, args.algorithm, algo.get_last_reason(),
                      sim_t, q_display, pm.cycle_count)
+        if preemption is not None and preemption.is_preempting:
+            draw_preempt_banner(canvas, preemption.target_phase, flash_on)
 
         writer.write(canvas)
 

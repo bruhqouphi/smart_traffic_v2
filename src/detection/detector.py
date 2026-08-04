@@ -15,6 +15,10 @@ class Detection:
     confidence: float
     class_id: int
     class_name: str
+    # Set by EmergencyClassifier, not by the detector itself — COCO has no
+    # emergency-vehicle class. Defaults False so a detector that never runs the
+    # classifier behaves exactly as before.
+    is_emergency: bool = False
 
     @property
     def center(self):
@@ -26,8 +30,11 @@ class Detection:
 
 
 class VehicleDetector:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, emergency_classifier=None):
         self.confidence_threshold = config.get("confidence_threshold", 0.4)
+        # Optional: flags detected vehicles as emergency vehicles by their light
+        # bar. Without one, `Detection.is_emergency` stays False everywhere.
+        self.emergency_classifier = emergency_classifier
         self.model = None
         self._load_model(config.get("model", "yolov8n.pt"))
 
@@ -57,4 +64,6 @@ class VehicleDetector:
                 class_id=class_id,
                 class_name=VEHICLE_CLASSES[class_id],
             ))
+        if self.emergency_classifier is not None:
+            self.emergency_classifier.classify(frame, detections)
         return detections

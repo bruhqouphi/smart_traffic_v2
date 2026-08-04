@@ -1,5 +1,11 @@
 from abc import ABC, abstractmethod
-from typing import Dict
+from typing import Dict, Optional, Set
+
+PHASES = ("NS", "EW")
+
+
+def other_phase(phase: str) -> str:
+    return "EW" if phase == "NS" else "NS"
 
 
 class TimingAlgorithm(ABC):
@@ -16,6 +22,15 @@ class TimingAlgorithm(ABC):
     @abstractmethod
     def get_last_reason(self) -> str:
         """Human-readable explanation of the last decision."""
+
+    # Optional hooks. Controllers that track elapsed time or service history
+    # override these; the rest inherit no-ops so every caller can drive any
+    # controller — including a wrapped one — without isinstance checks.
+    def update_sim_time(self, t: float) -> None:
+        """Tell the controller the current simulation time."""
+
+    def record_served(self, phase: str) -> None:
+        """Tell the controller a phase has just begun being served."""
 
 
 class FixedTimingAlgorithm(TimingAlgorithm):
@@ -217,6 +232,121 @@ class LongestQueueFirstAlgorithm(QueueClearingAlgorithm):
         return choice
 
 
+class EmergencyPreemptionController(TimingAlgorithm):
+    """
+    Emergency-vehicle preemption — the highest tier of the priority hierarchy.
+
+    This is a *wrapper*, not a fifth algorithm. It decorates any base controller
+    and takes over phase selection only while an emergency vehicle is waiting;
+    the rest of the time every decision passes straight through. Structuring it
+    this way means all four controllers gain preemption without duplicating a
+    line of their logic, and the with/without comparison is a like-for-like test
+    of the same base strategy.
+
+    Sequence, once an EV is detected on a phase:
+
+    1. That phase becomes the target. If it is already green, the green is held
+       (up to `max_preempt_green`) so the interval cannot expire under the EV.
+    2. If the conflicting phase is green, its green is truncated — but not
+       before `min_green_before_preempt` seconds have been served, because
+       dropping a green instantly strands vehicles already moving into the
+       junction. The signal still runs its full yellow and all-red before the
+       target turns green; preemption skips the *wait*, never the clearance.
+    3. The target is held green until the last EV has departed, plus
+       `clearance_extension` seconds for it to clear the junction, after which
+       control returns to the base controller.
+
+    If both phases have an EV, the one already being served wins, so the
+    controller finishes clearing it rather than oscillating between the two.
+    """
+
+    def __init__(self, base: TimingAlgorithm, config: dict):
+        e = config.get("emergency") or {}
+        t = config["timing"]
+        self.base = base
+        self.min_green_before_preempt = float(e.get("min_green_before_preempt", 0.0))
+        self.max_preempt_green = float(e.get("max_preempt_green", t["max_green"]))
+        self.clearance_extension = float(e.get("clearance_extension", 0.0))
+        if self.max_preempt_green <= 0:
+            raise ValueError("emergency.max_preempt_green must be positive")
+        if self.min_green_before_preempt < 0 or self.clearance_extension < 0:
+            raise ValueError("emergency timing values must not be negative")
+
+        self._target: Optional[str] = None
+        self._release_at: Optional[float] = None
+        self._sim_time = 0.0
+        self.preemption_count = 0
+        self._reason = "Preemption armed — no emergency vehicle"
+
+    # -- state ---------------------------------------------------------------
+    @property
+    def is_preempting(self) -> bool:
+        return self._target is not None
+
+    @property
+    def target_phase(self) -> Optional[str]:
+        return self._target
+
+    def notify_emergency(self, phases: Set[str], current_phase: str) -> bool:
+        """
+        Report which phases currently have a waiting EV.
+
+        Returns True on the tick a *new* preemption begins, so the caller can
+        count it. Must be called every tick for the clearance timer to run.
+        """
+        if phases:
+            # Prefer the phase being served: finish clearing it rather than
+            # oscillating when both approaches have an emergency vehicle.
+            target = current_phase if current_phase in phases else sorted(phases)[0]
+            self._release_at = None
+            if self._target is None:
+                self._target = target
+                self.preemption_count += 1
+                self._reason = f"PREEMPT: emergency vehicle on {target} — clearing"
+                return True
+            self._target = target
+            self._reason = f"PREEMPT: holding {target} for emergency vehicle"
+            return False
+
+        if self._target is not None:
+            # Last EV has departed: hold the phase a little longer so it is
+            # clear of the junction before conflicting movements are released.
+            if self._release_at is None:
+                self._release_at = self._sim_time + self.clearance_extension
+                self._reason = (
+                    f"PREEMPT: {self._target} clearing "
+                    f"({self.clearance_extension:.0f}s extension)"
+                )
+            if self._sim_time >= self._release_at:
+                self._target = None
+                self._release_at = None
+                self._reason = "Preemption released — normal control resumed"
+        return False
+
+    # -- TimingAlgorithm -----------------------------------------------------
+    def next_phase(self, queues: Dict[str, int], current_phase: str, elapsed: float) -> str:
+        if self._target is not None:
+            return self._target
+        return self.base.next_phase(queues, current_phase, elapsed)
+
+    def green_duration(self, queues: Dict[str, int], phase: str) -> float:
+        if self._target is not None and phase == self._target:
+            return self.max_preempt_green
+        return self.base.green_duration(queues, phase)
+
+    def get_last_reason(self) -> str:
+        if self._target is not None or self._release_at is not None:
+            return self._reason
+        return self.base.get_last_reason()
+
+    def update_sim_time(self, t: float) -> None:
+        self._sim_time = t
+        self.base.update_sim_time(t)
+
+    def record_served(self, phase: str) -> None:
+        self.base.record_served(phase)
+
+
 ALGORITHMS = {
     "fixed": FixedTimingAlgorithm,
     "proportional": ProportionalTimingAlgorithm,
@@ -226,7 +356,24 @@ ALGORITHMS = {
 
 
 def get_algorithm(name: str, config: dict) -> TimingAlgorithm:
+    """The bare controller, with no emergency wrapper. See build_controller."""
     key = name.lower().replace("-", "_")
     if key not in ALGORITHMS:
         raise ValueError(f"Unknown algorithm '{name}'. Choose from: {list(ALGORITHMS)}")
     return ALGORITHMS[key](config)
+
+
+def emergency_enabled(config: dict) -> bool:
+    return bool((config.get("emergency") or {}).get("enabled", False))
+
+
+def build_controller(name: str, config: dict) -> TimingAlgorithm:
+    """
+    The controller as it should actually be run: the named algorithm, wrapped in
+    emergency preemption when the config enables it. A config with no
+    `emergency:` block returns the bare controller, exactly as before.
+    """
+    base = get_algorithm(name, config)
+    if emergency_enabled(config):
+        return EmergencyPreemptionController(base, config)
+    return base

@@ -14,15 +14,19 @@ from src.detection.video_input import VideoInput
 from src.signals.phase_manager import PhaseManager, SignalState
 from src.signals.timing_algorithms import (
     ALGORITHMS,
-    QueueClearingAlgorithm,
+    EmergencyPreemptionController,
     TimingAlgorithm,
-    get_algorithm,
+    build_controller,
+    emergency_enabled,
 )
 
 # Derived from the registry so the dashboard never goes stale as algorithms are
 # added. Keys 1..N select algorithms in this order.
 ALGORITHM_NAMES = list(ALGORITHMS)
 _SIGNAL_RGB = {"red": (255, 0, 0), "green": (0, 255, 0), "yellow": (255, 255, 0)}
+_APPROACH_PHASE = {"north": "NS", "south": "NS", "east": "EW", "west": "EW"}
+_EV_BOX_RGB = (255, 40, 40)      # emergency detections, vs amber for ordinary
+_EV_ALERT_RGB = (255, 235, 60)
 # Number keys 1..4 → algorithm index 0..3
 _ALGO_KEYS = {
     pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2, pygame.K_4: 3,
@@ -68,14 +72,20 @@ class Dashboard:
             if "longest_queue_first" in ALGORITHM_NAMES
             else len(ALGORITHM_NAMES) - 1
         )
-        self.algorithm: TimingAlgorithm = get_algorithm(
+        self.algorithm: TimingAlgorithm = build_controller(
             ALGORITHM_NAMES[self.algo_idx], config
         )
+        self.emergency_on = emergency_enabled(config)
         self.phase_manager = PhaseManager(config, "NS")
         self.phase_manager.set_green_duration(
             self.algorithm.green_duration({}, "NS")
         )
         self.phase_manager.on_phase_change(self._on_phase_change)
+
+        # Approaches currently showing an emergency vehicle, and a running count
+        # of preemptions triggered during the session.
+        self.emergency_approaches: set = set()
+        self.preemption_count = 0
 
         # Video
         self.video = VideoInput(
@@ -119,20 +129,66 @@ class Dashboard:
     def _c(self, name: str):
         return tuple(self._colors[name])
 
+    @property
+    def preemption(self) -> Optional[EmergencyPreemptionController]:
+        algo = self.algorithm
+        return algo if isinstance(algo, EmergencyPreemptionController) else None
+
+    @property
+    def is_preempting(self) -> bool:
+        p = self.preemption
+        return p is not None and p.is_preempting
+
     def _on_phase_change(self, new_phase: str):
-        if isinstance(self.algorithm, QueueClearingAlgorithm):
-            self.algorithm.record_served(new_phase)
+        self.algorithm.record_served(new_phase)
         next_p = self.algorithm.next_phase(self.queues, new_phase, self._sim_time)
         duration = self.algorithm.green_duration(self.queues, next_p)
         self.phase_manager.request_phase_change(next_p, duration)
 
     def _switch_algorithm(self, idx: int):
         self.algo_idx = idx
-        self.algorithm = get_algorithm(ALGORITHM_NAMES[idx], self.config)
+        self.algorithm = build_controller(ALGORITHM_NAMES[idx], self.config)
         self.phase_manager = PhaseManager(self.config, "NS")
         g = self.algorithm.green_duration(self.queues, "NS")
         self.phase_manager.set_green_duration(g)
         self.phase_manager.on_phase_change(self._on_phase_change)
+
+    def _service_emergency(self):
+        """
+        Drive preemption from what the detector sees. Same sequence as
+        SimEngine._service_emergency — the difference is only where the
+        emergency signal comes from: ROI detections instead of the queue model.
+        """
+        preemption = self.preemption
+        if preemption is None:
+            return
+
+        phases = {
+            _APPROACH_PHASE[a]
+            for a in self.emergency_approaches
+            if a in _APPROACH_PHASE
+        }
+        pm = self.phase_manager
+        was = preemption.is_preempting
+        if preemption.notify_emergency(phases, pm.current_phase):
+            self.preemption_count += 1
+
+        if preemption.is_preempting:
+            target = preemption.target_phase
+            if pm.current_phase == target:
+                if pm.state == SignalState.GREEN:
+                    pm.hold_green(preemption.max_preempt_green)
+            else:
+                pm.request_phase_change(target, preemption.max_preempt_green)
+                pm.truncate_green(preemption.min_green_before_preempt)
+        elif was:
+            next_p = self.algorithm.next_phase(
+                self.queues, pm.current_phase, self._sim_time
+            )
+            pm.request_phase_change(
+                next_p, self.algorithm.green_duration(self.queues, next_p)
+            )
+            pm.truncate_green(0.0)
 
     # ------------------------------------------------------------------
     def _process_frame(self):
@@ -145,11 +201,17 @@ class Dashboard:
         self.detections = self.detector.detect(frame)
         if self.roi_manager:
             self.queues = self.roi_manager.count_vehicles_per_approach(self.detections)
+            self.emergency_approaches = self.roi_manager.emergency_approaches(
+                self.detections
+            )
         else:
             total = len(self.detections)
             per, rem = divmod(total, 4)
             for i, a in enumerate(("north", "south", "east", "west")):
                 self.queues[a] = per + (1 if i < rem else 0)
+            # Without an ROI there is no way to say which approach an emergency
+            # vehicle is on, so preemption cannot be targeted and stays off.
+            self.emergency_approaches = set()
 
     # ------------------------------------------------------------------
     def _draw_video(self):
@@ -164,11 +226,16 @@ class Dashboard:
                 for poly in self.roi_manager.get_polygons_for_display().values():
                     scaled = [(int(x * sx), int(y * sy)) for x, y in poly]
                     cv2.polylines(rgb, [np.array(scaled)], True, (0, 255, 100), 2)
-            # Detection boxes
+            # Detection boxes — emergency vehicles in red, everything else amber
             for det in self.detections:
                 x1 = int(det.x1 * sx); y1 = int(det.y1 * sy)
                 x2 = int(det.x2 * sx); y2 = int(det.y2 * sy)
-                cv2.rectangle(rgb, (x1, y1), (x2, y2), (255, 200, 0), 2)
+                if det.is_emergency:
+                    cv2.rectangle(rgb, (x1, y1), (x2, y2), _EV_BOX_RGB, 3)
+                    cv2.putText(rgb, "EMERGENCY", (x1, max(12, y1 - 5)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, _EV_BOX_RGB, 1)
+                else:
+                    cv2.rectangle(rgb, (x1, y1), (x2, y2), (255, 200, 0), 2)
             surf = pygame.surfarray.make_surface(rgb.transpose(1, 0, 2))
             self.screen.blit(surf, r.topleft)
             if self._roi_missing:
@@ -223,9 +290,20 @@ class Dashboard:
             f"Algo  : {ALGORITHM_NAMES[self.algo_idx]}",
             f"Cycle : {pm.cycle_count}",
         ]
+        if self.emergency_on:
+            p = self.preemption
+            status = (
+                f"PREEMPTING {p.target_phase}" if self.is_preempting else "armed"
+            )
+            lines.append(f"EVP   : {status}  ({self.preemption_count} total)")
         y = r.top + 8
         for line in lines:
-            self.screen.blit(self.font_sm.render(line, True, (210, 210, 210)),
+            colour = (
+                _EV_ALERT_RGB
+                if line.startswith("EVP") and self.is_preempting
+                else (210, 210, 210)
+            )
+            self.screen.blit(self.font_sm.render(line, True, colour),
                              (r.left + 8, y))
             y += 18
 
@@ -297,6 +375,25 @@ class Dashboard:
         )
         pygame.draw.rect(self.screen, (80, 80, 80), r, 1)
 
+    def _draw_emergency_banner(self):
+        """Flashing full-width alert across the top while preemption is active."""
+        if not self.is_preempting:
+            return
+        # ~3 Hz flash, driven by wall clock so it is independent of frame rate.
+        on = int(time.perf_counter() * 3) % 2 == 0
+        approaches = ", ".join(sorted(self.emergency_approaches)).upper()
+        target = self.preemption.target_phase
+        text = f"EMERGENCY VEHICLE  {approaches or target}  -  PREEMPTING {target}"
+
+        band = pygame.Rect(0, 0, self.W, 34)
+        pygame.draw.rect(self.screen, (190, 0, 0) if on else (95, 0, 0), band)
+        pygame.draw.rect(self.screen, _EV_ALERT_RGB, band, 2)
+        label = self.font_lg.render(text, True, (255, 255, 255))
+        self.screen.blit(
+            label, (self.W // 2 - label.get_width() // 2,
+                    band.centery - label.get_height() // 2)
+        )
+
     # ------------------------------------------------------------------
     def run(self):
         running = True
@@ -326,8 +423,8 @@ class Dashboard:
                     self._process_frame()
 
                 self._sim_time += dt
-                if isinstance(self.algorithm, QueueClearingAlgorithm):
-                    self.algorithm.update_sim_time(self._sim_time)
+                self.algorithm.update_sim_time(self._sim_time)
+                self._service_emergency()
                 self.phase_manager.step(dt)
                 self.queue_history.append(dict(self.queues))
                 if len(self.queue_history) > self._max_history:
@@ -338,6 +435,7 @@ class Dashboard:
             self._draw_signal_diagram()
             self._draw_bar_chart()
             self._draw_queue_history()
+            self._draw_emergency_banner()
 
             if self.paused:
                 # Centred over the video quadrant, not the window — the window

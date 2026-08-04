@@ -19,23 +19,25 @@ class ColorDetector:
     """
 
     def __init__(self, min_area: int = 400, min_saturation: int = 50,
-                 min_value: int = 55):
+                 min_value: int = 55, emergency_classifier=None):
         self.min_area = min_area
         self.min_saturation = min_saturation
         self.min_value = min_value
+        self.emergency_classifier = emergency_classifier
         kernel_size = 3
         self._kernel = cv2.getStructuringElement(
             cv2.MORPH_RECT, (kernel_size, kernel_size)
         )
 
     @classmethod
-    def from_config(cls, config: dict) -> "ColorDetector":
+    def from_config(cls, config: dict, emergency_classifier=None) -> "ColorDetector":
         """Build from the `detection` block, falling back to defaults."""
         d = config.get("detection", {})
         return cls(
             min_area=d.get("color_min_area", 400),
             min_saturation=d.get("color_min_saturation", 50),
             min_value=d.get("color_min_value", 55),
+            emergency_classifier=emergency_classifier,
         )
 
     def detect(self, frame: np.ndarray) -> List[Detection]:
@@ -66,4 +68,6 @@ class ColorDetector:
                 class_id=2,
                 class_name="car",
             ))
+        if self.emergency_classifier is not None:
+            self.emergency_classifier.classify(frame, detections)
         return detections

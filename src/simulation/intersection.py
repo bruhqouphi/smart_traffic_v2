@@ -1,9 +1,12 @@
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Set
 
 import numpy as np
 
 MOVEMENTS = ("through", "left", "right")
+
+# Which signal phase serves each approach. NS and EW are the two phases.
+APPROACH_PHASE = {"north": "NS", "south": "NS", "east": "EW", "west": "EW"}
 
 # With no `turning:` block every vehicle goes straight and discharges at full
 # saturation flow — the behaviour of the model before turns were added.
@@ -17,6 +20,7 @@ class Vehicle:
     arrival_time: float
     departure_time: Optional[float] = None
     movement: str = "through"
+    is_emergency: bool = False
 
     @property
     def wait_time(self) -> Optional[float]:
@@ -129,6 +133,40 @@ class ApproachQueue:
         self.blocked += blocked
         return blocked
 
+    def arrive_emergency(self, t: float) -> Vehicle:
+        """
+        Queue one emergency vehicle at the head of the approach.
+
+        Two departures from ordinary arrivals, both deliberate:
+
+        * **It jumps the queue.** Ordinary traffic pulls aside for a siren, so
+          an EV reaches the stop line ahead of the vehicles that arrived before
+          it. This is the priority-scheduling tier of the queue model — the
+          signal-level preemption sits on top of it. EVs already waiting keep
+          their relative order (FIFO among equals).
+        * **It ignores `queue_capacity`.** An EV is never turned away as
+          spillback; it uses the shoulder or the opposing lane. Accepting it
+          unconditionally also keeps EV wait time measurable in oversaturated
+          runs, where an EV would otherwise simply vanish from the metrics.
+        """
+        vehicle = Vehicle(
+            self._next_id, self.approach, t, movement="through", is_emergency=True
+        )
+        self._next_id += 1
+        insert_at = 0
+        while insert_at < len(self._queue) and self._queue[insert_at].is_emergency:
+            insert_at += 1
+        self._queue.insert(insert_at, vehicle)
+        return vehicle
+
+    @property
+    def has_emergency(self) -> bool:
+        return any(v.is_emergency for v in self._queue)
+
+    @property
+    def emergency_count(self) -> int:
+        return sum(1 for v in self._queue if v.is_emergency)
+
     def depart(self, dt: float, t: float) -> List[Vehicle]:
         self._green_credit += dt
         departed = []
@@ -188,6 +226,22 @@ class Intersection:
                 movements = self.turning.sample(n)
                 blocked[approach] = self.approaches[approach].arrive(n, t, movements)
         return blocked
+
+    def arrive_emergency(self, approaches: Sequence[str], t: float) -> List[Vehicle]:
+        """Queue one emergency vehicle at the head of each named approach."""
+        return [
+            self.approaches[a].arrive_emergency(t)
+            for a in approaches
+            if a in self.approaches
+        ]
+
+    def emergency_approaches(self) -> Set[str]:
+        """Approaches with at least one emergency vehicle still waiting."""
+        return {name for name, q in self.approaches.items() if q.has_emergency}
+
+    def emergency_phases(self) -> Set[str]:
+        """Phases that would serve a waiting emergency vehicle."""
+        return {APPROACH_PHASE[a] for a in self.emergency_approaches()}
 
     def depart_phase(self, phase: str, dt: float, t: float) -> List[Vehicle]:
         """Depart from both approaches of the phase simultaneously."""

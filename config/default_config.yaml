@@ -36,6 +36,26 @@ queue_clearing:
   long_queue_min_green: 20
   long_queue_max_green: 60
 
+# Emergency-vehicle preemption. Remove this whole block (or set enabled: false)
+# and the model behaves exactly as it did before preemption existed — no EVs are
+# generated and no controller is wrapped. That fallback is pinned by tests.
+emergency:
+  enabled: true
+  # EV arrivals per approach (vehicles/second), on top of ordinary demand.
+  # 0.002 ~= one EV every 8 minutes per approach; over a 600 s run that is
+  # ~5 EVs across the junction — frequent enough to measure, rare enough that
+  # preemption does not dominate the signal plan.
+  arrival_rate: 0.002
+  # Safety floor: an in-progress green must run at least this long before
+  # preemption may truncate it. Real EVP controllers honour minimum green
+  # rather than dropping a green instantly. Set to 0 for instant preemption.
+  min_green_before_preempt: 5.0
+  # Hard cap on a preemption green, in case an EV somehow never clears.
+  max_preempt_green: 45.0
+  # Seconds the preempted phase is held green after the last EV departs, so the
+  # EV is clear of the intersection before normal control resumes.
+  clearance_extension: 3.0
+
 scenarios:
   balanced:
     north: 0.3
@@ -67,6 +87,22 @@ detection:
   color_min_area: 400
   color_min_saturation: 50
   color_min_value: 55
+  # EmergencyClassifier. COCO has no ambulance class, so an EV is identified by
+  # its light bar: saturated red and saturated blue that are each a small share
+  # of the vehicle AND present in comparable amounts. A blue car with red tail
+  # lights fails the balance test; that false positive is what these three
+  # thresholds exist to stop. Heuristic, not a trained classifier — see
+  # README > Known limitations.
+  emergency_min_lightbar_fraction: 0.015   # both colours genuinely present
+  emergency_max_lightbar_fraction: 0.35    # neither is the paintwork
+  emergency_min_lightbar_balance: 0.35     # areas within ~3x of each other
+  emergency_min_saturation: 90
+  emergency_min_value: 90
+  # Fraction of the bbox height, measured from the top, searched for the bar.
+  # 1.0 searches the whole box — correct for the top-down synthetic view, and
+  # safe generally since ordinary vehicles rarely show saturated red AND blue.
+  # Lower it to ~0.5 for oblique CCTV footage to look only at the roof line.
+  emergency_lightbar_band: 1.0
 
 visualization:
   window_width: 1280
