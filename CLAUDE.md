@@ -16,6 +16,14 @@ Emergency-vehicle preemption sits on top of all four controllers and delivers a
 a *wrapper* (`EmergencyPreemptionController`), not a fifth algorithm — see
 `README.md` → Emergency-vehicle priority.
 
+`PreemptiveSchedulingController` (off by default) is the SRTF counterpart for
+ordinary traffic: it re-runs the base rule mid-green instead of only at phase
+boundaries. Its result reinforces the headline rather than complicating it —
+preemption mostly buys *shorter greens*, and under it the four controllers
+converge again, just as they do under a tight aging bound. Wrapper order is
+`base → preemptive → emergency`, emergency outermost so an ambulance can never
+be interrupted by the scheduler.
+
 Everything runs in simulation. No hardware required.
 
 ## Commands
@@ -23,7 +31,7 @@ Everything runs in simulation. No hardware required.
 ```powershell
 .\.venv\Scripts\Activate.ps1
 
-python -m pytest tests/ -q                 # 166 tests
+python -m pytest tests/ -q                 # 191 tests
 python scripts/run_simulation.py --scenario balanced --algorithm longest_queue_first --duration 600 --seed 42
 python scripts/compare_algorithms.py --trials 5 --export --config config/low_load_config.yaml
 python scripts/sweep_aging.py --trials 5
@@ -90,6 +98,30 @@ classes from `timing_algorithms.py`.
   - on-screen readout of current phase / green time remaining / active algorithm
   - the flashing emergency alert band, red `EMERGENCY` bounding boxes, and the
     `EVP: armed | PREEMPTING <phase>` status line
+  - the animated top-down junction panel (top-right). It renders one marker per
+    *detected* vehicle from the ROI counts — it is a view of measured state, not
+    a second simulation, and must never feed back into the controller.
+
+## Synthetic video rendering
+
+`scripts/generate_synthetic_video.py` draws vehicles with **OpenCV**, not
+pygame, and bakes them into an .mp4; the dashboard only plays that file back.
+Vehicles are built as offscreen sprites facing "up" and rotated per approach
+with `np.rot90` — the same technique as the reference project's per-direction
+PNG folders, so detail stays identical in all four directions.
+
+Two constraints bind anything drawn here:
+
+- **Vehicle bodies must stay high-saturation.** `ColorDetector` finds vehicles
+  by thresholding HSV saturation, so a realistic grey or white car is invisible
+  to the pipeline. Hue is free; saturation is not.
+- **Keep `VGAP` non-zero and the drop shadow dark.** Both are what stop a queue
+  merging into one contour and being counted as a single vehicle.
+
+`--no-hud` must suppress *all* baked-in overlay including the preemption
+banner, or footage fed to the dashboard will caption a preemption the dashboard
+is independently deciding about, and the two will contradict each other
+on screen.
 
 ## matplotlib is for thesis numbers only
 
@@ -140,12 +172,21 @@ trained classifier**, because COCO has no ambulance class. It looks for
 saturated red and blue that are each a small share of the vehicle and balanced
 in area. Do not describe it as YOLO-based emergency detection.
 
-Two things were learned the hard way and must not be undone:
+Three things were learned the hard way and must not be undone:
 
 - Testing only "are red and blue both present?" flags every blue car (they have
   red tail lights). Measured: it fired on 675 of 2233 ordinary detections.
 - Requiring the colours be *adjacent* does not help either — tail lights touch
-  the bodywork. Only **relative area** separates the cases.
+  the bodywork. Only **relative area** separates those cases.
+- Balance alone is still not enough: a **bus** has blue-tinted side glazing
+  running the length of its body and red tail lights across the rear, which is
+  balanced. That needs the fourth test, `max_fixture_extent` — the red and blue
+  pixels together must fit in one compact bounding box, as a real light bar
+  does. Found when the synthetic vehicles were redesigned; pinned by
+  `test_bus_with_blue_glazing_and_tail_lights_is_not_flagged`.
+
+Relatedly, `GLASS` in `scripts/generate_synthetic_video.py` is **green**-tinted
+on purpose (real automotive glass is). Do not make it blue again.
 
 It also misses fire engines (red bodywork swamps the balance test) and has been
 validated only on synthetic footage. Replacing it with a fine-tuned YOLO model

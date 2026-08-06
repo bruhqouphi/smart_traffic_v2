@@ -24,7 +24,12 @@ are each
 * within `min_balance` of each other in area — a two-tone bar, not a body
   colour plus a tail light.
 
-The last test is what does the real work.
+A fourth test is then applied to the two colours *together*: they must occupy
+one compact region. A light bar is a single fixture, so the bounding box of all
+its red and blue pixels covers a small part of the vehicle. This is what
+separates a bar from a bus, whose blue-tinted side glazing runs the length of
+the body while its red tail lights sit across the rear — individually balanced,
+but spread over the whole vehicle. Balance alone flagged those buses.
 
 This is a heuristic, not a learned classifier, and it is deliberately the
 weakest link in the pipeline — see README > Known limitations. Everything
@@ -56,7 +61,10 @@ class EmergencyClassifier:
         band: float = 1.0,
         max_lightbar_fraction: float = 0.35,
         min_balance: float = 0.35,
+        max_fixture_extent: float = 0.40,
     ):
+        if not 0.0 < max_fixture_extent <= 1.0:
+            raise ValueError("emergency_max_fixture_extent must be in (0, 1]")
         if not 0.0 < band <= 1.0:
             raise ValueError("emergency_lightbar_band must be in (0, 1]")
         if not 0.0 <= min_lightbar_fraction <= 1.0:
@@ -71,6 +79,7 @@ class EmergencyClassifier:
         self.min_lightbar_fraction = min_lightbar_fraction
         self.max_lightbar_fraction = max_lightbar_fraction
         self.min_balance = min_balance
+        self.max_fixture_extent = max_fixture_extent
         self.min_saturation = min_saturation
         self.min_value = min_value
         self.band = band
@@ -82,6 +91,7 @@ class EmergencyClassifier:
             min_lightbar_fraction=d.get("emergency_min_lightbar_fraction", 0.015),
             max_lightbar_fraction=d.get("emergency_max_lightbar_fraction", 0.35),
             min_balance=d.get("emergency_min_lightbar_balance", 0.35),
+            max_fixture_extent=d.get("emergency_max_fixture_extent", 0.40),
             min_saturation=d.get("emergency_min_saturation", 90),
             min_value=d.get("emergency_min_value", 90),
             band=d.get("emergency_lightbar_band", 1.0),
@@ -124,9 +134,20 @@ class EmergencyClassifier:
         # ...neither one is the bodywork...
         if max(red_frac, blue_frac) > self.max_lightbar_fraction:
             return False
-        # ...and they are comparable in area, as the two halves of a bar are.
+        # ...they are comparable in area, as the two halves of a bar are...
         balance = min(red_frac, blue_frac) / max(red_frac, blue_frac)
-        return balance >= self.min_balance
+        if balance < self.min_balance:
+            return False
+
+        # ...and together they form one compact fixture rather than being
+        # scattered over the vehicle (bus glazing down the flanks, tail lights
+        # across the rear).
+        combined = (red | blue) & bright
+        ys, xs = np.nonzero(combined)
+        extent = ((ys.max() - ys.min() + 1) * (xs.max() - xs.min() + 1)) / total
+        # Cast explicitly: numpy's bool_ is not the `True` singleton, and
+        # callers (and tests) treat this as a plain bool.
+        return bool(extent <= self.max_fixture_extent)
 
     def classify(self, frame: np.ndarray, detections: Iterable[Detection]) -> List[Detection]:
         """Set `is_emergency` on each detection in place; returns the same list."""

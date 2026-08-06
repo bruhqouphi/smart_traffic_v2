@@ -490,6 +490,22 @@ class TestEmergencyClassifier:
         frame[22:26, 50:56] = (40, 40, 240)
         assert self.clf.is_emergency(frame, _box()) is False
 
+    def test_bus_with_blue_glazing_and_tail_lights_is_not_flagged(self):
+        """
+        Regression #2, found when the synthetic vehicles were redesigned. A bus
+        has a long run of side glazing; when that glass was tinted blue it
+        paired with the red tail-light bar to give a balance of 0.37 — just
+        over the threshold — and buses started reading as ambulances. The fixes
+        were green-tinted glass and corner tail lights instead of a full-width
+        bar. This pins the shape of the failure, not the specific colours.
+        """
+        frame = np.zeros((80, 80, 3), dtype=np.uint8)
+        frame[20:60, 20:60] = (60, 200, 70)          # green bus body
+        frame[24:56, 22:26] = (105, 88, 60)          # blue-tinted side glazing
+        frame[24:56, 54:58] = (105, 88, 60)
+        frame[56:59, 22:58] = (40, 40, 200)          # full-width red tail bar
+        assert self.clf.is_emergency(frame, _box()) is False
+
     def test_red_car_with_blue_trim_is_not_flagged(self):
         frame = _vehicle_patch((40, 40, 240))       # red bodywork
         frame[22:26, 24:32] = (240, 70, 40)         # small blue trim

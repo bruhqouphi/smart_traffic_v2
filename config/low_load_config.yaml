@@ -59,6 +59,26 @@ emergency:
   # EV is clear of the intersection before normal control resumes.
   clearance_extension: 3.0
 
+# Preemptive scheduling (the SRTF counterpart to the non-preemptive
+# controllers). When enabled, the active controller's selection rule is re-run
+# every tick and the green is cut short the moment it prefers the other phase,
+# instead of only deciding at phase boundaries.
+#
+# OFF by default, and deliberately so: this is the knob for the "does
+# preemption help ordinary traffic the way it helps emergency vehicles?"
+# experiment, not part of the headline results. Leaving it false reproduces
+# every number in the README exactly.
+preemptive:
+  enabled: false
+  # A green must run at least this long before it can be preempted — the
+  # scheduling quantum's floor, and the same safety idea as the emergency
+  # tier's min_green_before_preempt.
+  min_service_before_preempt: 5.0
+  # The rival phase must be ahead by this many vehicles, not merely tied.
+  # Hysteresis: without it a single arrival triggers a switch that costs a full
+  # yellow + all-red to make.
+  margin_vehicles: 0
+
 # Unsaturated demand: every approach stays below capacity, so adaptive control
 # has spare green to reallocate and can actually help. Rates are 30% of
 # default_config.yaml. The peak approach (0.21 veh/s) sits under the effective
@@ -106,6 +126,11 @@ detection:
   emergency_min_lightbar_fraction: 0.015   # both colours genuinely present
   emergency_max_lightbar_fraction: 0.35    # neither is the paintwork
   emergency_min_lightbar_balance: 0.35     # areas within ~3x of each other
+  # Red and blue must also form ONE compact fixture: the bounding box of all
+  # light-bar pixels may cover at most this share of the vehicle. A bus with
+  # blue-tinted glazing down its flanks and red tail lights across the rear is
+  # balanced but spread over the whole body, and this is what rejects it.
+  emergency_max_fixture_extent: 0.40
   emergency_min_saturation: 90
   emergency_min_value: 90
   # Fraction of the bbox height, measured from the top, searched for the bar.

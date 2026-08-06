@@ -42,6 +42,11 @@ class SimEngine:
         self.preemption: Optional[EmergencyPreemptionController] = (
             algorithm if isinstance(algorithm, EmergencyPreemptionController) else None
         )
+        # Minimum green a preemptive scheduler must serve before it may cut its
+        # own green short. Same safety floor idea as the emergency tier's.
+        self._min_service_before_preempt = float(
+            (config.get("preemptive") or {}).get("min_service_before_preempt", 0.0)
+        )
 
         # Set green duration for the very first phase
         initial_green = algorithm.green_duration(self.intersection.queue_lengths(), "NS")
@@ -99,6 +104,27 @@ class SimEngine:
             self._request_next_phase(pm.current_phase)
             pm.truncate_green(0.0)
 
+    def _service_scheduler_preemption(self):
+        """
+        Let a preemptive controller cut its own green short. No-op for every
+        non-preemptive controller, which is all of them by default.
+
+        Runs after the emergency tier, which returns None while it is in
+        control, so an ambulance can never be interrupted by the scheduler.
+        """
+        pm = self.phase_manager
+        if pm.state != SignalState.GREEN:
+            return
+        queues = self.intersection.queue_lengths()
+        target = self.algorithm.wants_preemption(
+            queues, pm.current_phase, pm.state_elapsed
+        )
+        if target is None or target == pm.current_phase:
+            return
+        pm.request_phase_change(target, self.algorithm.green_duration(queues, target))
+        if pm.truncate_green(self._min_service_before_preempt):
+            self.metrics.record_scheduler_preemption(self.t, target)
+
     def _is_discharging(self) -> bool:
         """
         Vehicles leave during GREEN, and for the first yellow_discharge_time
@@ -129,6 +155,7 @@ class SimEngine:
             self.intersection.arrive_emergency(ev_approaches, self.t)
 
         self._service_emergency()
+        self._service_scheduler_preemption()
 
         if self._is_discharging():
             departed = self.intersection.depart_phase(

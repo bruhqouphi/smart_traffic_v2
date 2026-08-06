@@ -32,6 +32,17 @@ class TimingAlgorithm(ABC):
     def record_served(self, phase: str) -> None:
         """Tell the controller a phase has just begun being served."""
 
+    def wants_preemption(self, queues: Dict[str, int], current_phase: str,
+                         elapsed: float) -> Optional[str]:
+        """
+        Phase to switch to *mid-green*, or None to let the green run out.
+
+        Non-preemptive by default, which is every controller here: once a green
+        starts it runs its allotted duration whatever arrives. Only
+        PreemptiveSchedulingController overrides this.
+        """
+        return None
+
 
 class FixedTimingAlgorithm(TimingAlgorithm):
     def __init__(self, config: dict):
@@ -232,6 +243,78 @@ class LongestQueueFirstAlgorithm(QueueClearingAlgorithm):
         return choice
 
 
+class PreemptiveSchedulingController(TimingAlgorithm):
+    """
+    Makes any base controller preemptive — the SRTF counterpart to its
+    non-preemptive self.
+
+    Every other controller here decides only at phase boundaries: a green, once
+    started, runs its full allotted duration no matter what arrives. This
+    wrapper re-runs the base controller's selection rule on *every tick* and
+    cuts the green short the moment that rule prefers the other phase, exactly
+    as SRTF preempts a running job when a shorter one arrives.
+
+    Two guards stop it chattering, and both have direct scheduling analogues:
+
+    * `min_service_before_preempt` — a job runs at least this long before it can
+      be preempted, the scheduling quantum's floor.
+    * `margin_vehicles` — the rival phase must be better by this much, not
+      merely tied. Hysteresis, to avoid thrashing on a one-vehicle difference.
+
+    Off by default. This exists to answer "does preemption help ordinary
+    traffic the way it helps emergency vehicles?", and the answer is not
+    assumed — see README > Preemptive scheduling.
+    """
+
+    def __init__(self, base: TimingAlgorithm, config: dict):
+        p = config.get("preemptive") or {}
+        self.base = base
+        self.min_service = float(p.get("min_service_before_preempt", 0.0))
+        self.margin = int(p.get("margin_vehicles", 0))
+        if self.min_service < 0:
+            raise ValueError("preemptive.min_service_before_preempt must not be negative")
+        if self.margin < 0:
+            raise ValueError("preemptive.margin_vehicles must not be negative")
+        self.preemption_count = 0
+
+    @staticmethod
+    def _phase_total(queues: Dict[str, int], phase: str) -> int:
+        if phase == "NS":
+            return queues.get("north", 0) + queues.get("south", 0)
+        return queues.get("east", 0) + queues.get("west", 0)
+
+    def wants_preemption(self, queues: Dict[str, int], current_phase: str,
+                         elapsed: float) -> Optional[str]:
+        if elapsed < self.min_service:
+            return None
+        choice = self.base.next_phase(queues, current_phase, elapsed)
+        if choice == current_phase:
+            return None
+        # Require a genuine improvement so a single arrival cannot trigger a
+        # switch that costs a full yellow + all-red to make.
+        if (self._phase_total(queues, choice)
+                - self._phase_total(queues, current_phase)) < self.margin:
+            return None
+        self.preemption_count += 1
+        return choice
+
+    # -- straight delegation -------------------------------------------------
+    def next_phase(self, queues: Dict[str, int], current_phase: str, elapsed: float) -> str:
+        return self.base.next_phase(queues, current_phase, elapsed)
+
+    def green_duration(self, queues: Dict[str, int], phase: str) -> float:
+        return self.base.green_duration(queues, phase)
+
+    def get_last_reason(self) -> str:
+        return self.base.get_last_reason()
+
+    def update_sim_time(self, t: float) -> None:
+        self.base.update_sim_time(t)
+
+    def record_served(self, phase: str) -> None:
+        self.base.record_served(phase)
+
+
 class EmergencyPreemptionController(TimingAlgorithm):
     """
     Emergency-vehicle preemption — the highest tier of the priority hierarchy.
@@ -346,6 +429,14 @@ class EmergencyPreemptionController(TimingAlgorithm):
     def record_served(self, phase: str) -> None:
         self.base.record_served(phase)
 
+    def wants_preemption(self, queues: Dict[str, int], current_phase: str,
+                         elapsed: float) -> Optional[str]:
+        # While an emergency vehicle is being cleared the base controller does
+        # not get to preempt anything — priority scheduling outranks it.
+        if self._target is not None:
+            return None
+        return self.base.wants_preemption(queues, current_phase, elapsed)
+
 
 ALGORITHMS = {
     "fixed": FixedTimingAlgorithm,
@@ -367,13 +458,26 @@ def emergency_enabled(config: dict) -> bool:
     return bool((config.get("emergency") or {}).get("enabled", False))
 
 
+def preemptive_enabled(config: dict) -> bool:
+    return bool((config.get("preemptive") or {}).get("enabled", False))
+
+
 def build_controller(name: str, config: dict) -> TimingAlgorithm:
     """
-    The controller as it should actually be run: the named algorithm, wrapped in
-    emergency preemption when the config enables it. A config with no
-    `emergency:` block returns the bare controller, exactly as before.
+    The controller as it should actually be run: the named algorithm, wrapped
+    in whichever tiers the config enables.
+
+    Order is the priority hierarchy, innermost first:
+
+        base -> preemptive scheduling -> emergency preemption
+
+    Emergency sits outermost so it overrides everything, including a
+    mid-green switch the scheduler wanted. A config with neither block returns
+    the bare controller, exactly as before.
     """
-    base = get_algorithm(name, config)
+    controller = get_algorithm(name, config)
+    if preemptive_enabled(config):
+        controller = PreemptiveSchedulingController(controller, config)
     if emergency_enabled(config):
-        return EmergencyPreemptionController(base, config)
-    return base
+        controller = EmergencyPreemptionController(controller, config)
+    return controller

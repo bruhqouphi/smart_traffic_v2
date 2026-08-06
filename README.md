@@ -15,6 +15,76 @@ No hardware required — everything runs in simulation, including a synthetic
 video generator so the full vision pipeline can be exercised without a camera
 or real footage.
 
+---
+
+## Key findings
+
+Six results, in the order they matter. Every number below is 5 seeded trials ×
+600 s; the ordinary-traffic figures use `config/low_load_config.yaml` with
+emergency preemption disabled, so the scheduling question is measured on its
+own. Detail and method for each are linked.
+
+**1. Green-time allocation is the lever; phase order is not.**
+A saturation-flow green rule with prompt alternation cuts average wait **−33%
+against fixed-time** and **−22% against proportional** control. The
+saturation-flow formula, not the phase-selection heuristic, is what earns the
+gain. → [Findings](#below-capacity--where-green-allocation-is-decided)
+
+**2. SJF and max-pressure are indistinguishable — the central negative result.**
+Under a tight aging bound, `queue_clearing` (serve the shortest queue) and
+`longest_queue_first` (serve the longest) produce **bit-identical** results. A
+phase can only re-serve every 15–20 s, so aging fires on essentially every
+decision and overrides the heuristic entirely. **On a two-phase junction there
+is no phase-order problem left to solve once aging is tight.**
+
+**3. The aging bound dominates every other tuning parameter.**
+Tightening it from 60 s → 20 s takes balanced wait from 22.3 s → 13.5 s,
+monotonically. The original 60 s default is what made early adaptive results
+*lose* to the baselines. Below ~20 s it stops binding and minimum cycle time
+takes over. → `scripts/sweep_aging.py`
+
+**4. Preemption helps — but mostly by shortening greens, and the controllers
+converge again.**
+Making any controller preemptive (SRTF-style, re-deciding mid-green) improves
+`fixed` by −7.9 s but the tuned adaptive controllers by only −1.9 s, and
+sometimes makes them worse. Under preemption all four land at 11.6–12.3 s,
+against 13.5–20.1 s without it. Finding 2 arrives by a third independent route.
+The service interval also shows a textbook quantum curve: **thrashing** at a
+2 s floor (69 switches, each costing 5 s of lost time) and total degeneration
+above 15 s. → [Preemptive scheduling](#preemptive-scheduling)
+
+> Findings 1–4 are one claim seen from four angles: **there is an optimal
+> service interval, and green allocation, aging and preemption are three
+> different ways of finding it.** The phase-selection heuristics the proposal
+> set out to compare turn out to be inert on a two-phase junction.
+
+**5. Emergency preemption: 78–86% faster response for 1–6 s of delay to
+everyone else.**
+Ambulances clear in **4.3–5.3 s** against the **23.9–30.0 s** an ordinary
+vehicle waits under the same controller and demand. The cost is +0.6 to +6.4 s
+of average wait for ordinary traffic. The gain is largest under `fixed` —
+preemption is worth most where the underlying controller is least responsive.
+→ [Emergency-vehicle priority](#emergency-vehicle-priority)
+
+**6. Above capacity, wait time stops being the right metric.**
+At a volume-to-capacity ratio of ~1.4 the honest headline is **throughput**:
+449 vehicles served vs 434, and 0.8 pp less demand turned away. Wait time is
+measured only over vehicles that got through. On the three rush scenarios
+everything converges — when one approach is far beyond capacity, no allocation
+of green helps. → [Above capacity](#above-capacity--where-wait-time-stops-being-the-metric)
+
+### On the vision half — read this before quoting the detection numbers
+
+Emergency-vehicle detection is a **light-bar heuristic, not a trained
+classifier**: COCO has no ambulance class. It scores **0 false positives across
+15,341 vehicle detections** of EV-free footage, but that is a property of
+*synthetic* footage, not a claim about real CCTV. It also misses fire engines by
+construction. Three approaches were tried and measured before one worked, and
+all three are pinned as regression tests — see
+[Known limitations](#known-limitations) 6.
+
+---
+
 ## The contribution: green-time allocation beats phase-selection
 
 The headline finding (see [Findings](#findings)) is that on a two-phase
@@ -125,6 +195,76 @@ life-saving argument rests on, now measured rather than asserted.
 Turn it all off with `--no-emergency` on any script, or by removing the
 `emergency:` block from the config.
 
+## Preemptive scheduling
+
+Every controller above is **non-preemptive for ordinary traffic**: once a green
+starts it runs its allotted duration whatever arrives. `PreemptiveSchedulingController`
+is the SRTF counterpart — it wraps any base controller, re-runs its selection
+rule every tick, and cuts the green short the moment the rule prefers the other
+phase. Two guards, both with direct scheduling analogues:
+`min_service_before_preempt` (the quantum's floor) and `margin_vehicles`
+(hysteresis, so a single arrival cannot trigger a switch costing a full
+yellow + all-red).
+
+Off by default. Enable with `preemptive.enabled: true`; measure with
+`scripts/sweep_preemption.py`. Emergency preemption sits outermost in the
+wrapper chain, so an ambulance can never be interrupted by the scheduler.
+
+### Result: preemption helps, but not for the reason it looks like
+
+Average wait (s), 5 trials × 600 s, `low_load_config.yaml`, emergency disabled
+so the scheduling question is measured on its own:
+
+| Algorithm             | Scenario     | Non-preemptive | Preemptive | Δ    |
+|-----------------------|--------------|:--------------:|:----------:|:----:|
+| `fixed`               | balanced     | 20.1           | **12.3**   | −7.9 |
+| `fixed`               | morning_rush | 30.8           | **26.3**   | −4.5 |
+| `proportional`        | balanced     | 17.2           | **12.3**   | −4.9 |
+| `queue_clearing`      | balanced     | 13.5           | **11.6**   | −1.9 |
+| `longest_queue_first` | balanced     | 13.5           | **11.6**   | −1.9 |
+| `longest_queue_first` | morning_rush | **23.8**       | 26.4       | +2.6 |
+
+The gain is largest for `fixed` (−7.9 s) and smallest — sometimes negative —
+for the already-tuned adaptive controllers. That pattern is the tell: **most of
+what preemption buys is shorter greens, not better phase choices.** Preemptive
+`fixed` runs 55 service cycles per 600 s instead of 15.
+
+Two follow-ups confirm it. First, sweeping a plain fixed green:
+
+| `fixed` green | 5 s  | 8 s  | 12 s | 20 s | 35 s |
+|---------------|:----:|:----:|:----:|:----:|:----:|
+| avg wait (s)  | 14.0 | 13.1 | 13.2 | 14.9 | 20.1 |
+
+Preemptive `fixed` reaches 12.3 s — better than *any* static green. So
+preemption is not purely "shorter greens": the residual ~0.8 s comes from
+ending each green when demand actually shifts rather than on a fixed timer.
+
+Second, and more tellingly, **the four controllers converge again under
+preemption** — 12.3 / 12.3 / 11.6 / 11.6 on `balanced`, against 20.1 / 17.2 /
+13.5 / 13.5 without it. Exactly as a tight aging bound collapses the
+phase-selection heuristics (Finding 2), frequent preemption collapses them too.
+Preemption is a third route to prompt alternation, and prompt alternation is
+what the phase-selection rule was supposed to be deciding.
+
+### The quantum has an optimum, and both ends are visible
+
+`longest_queue_first` / `balanced`, sweeping the preemption floor:
+
+| `min_service_before_preempt` | 2 s  | 5 s      | 10 s | 15 s | 25 s |
+|------------------------------|:----:|:--------:|:----:|:----:|:----:|
+| avg wait (s)                 | 12.8 | **11.6** | 12.2 | 13.5 | 13.5 |
+| mid-green switches           | 69   | 53       | 38   | 1    | 0    |
+
+A textbook round-robin quantum curve. Too small (2 s) and it **thrashes** —
+69 switches, each paying 5 s of yellow + all-red, and the wait rises. Too large
+(≥15 s) and preemption stops firing at all: switches fall to 0 and the result
+lands exactly on the non-preemptive number, 13.5 s. The hysteresis knob shows
+the same shape, optimum at `margin_vehicles: 2` (11.3 s).
+
+This is the clearest statement in the project of the underlying claim:
+**there is an optimal service interval, and every mechanism that helps — green
+allocation, aging, preemption — is really a different way of finding it.**
+
 ## Project structure
 
 ```
@@ -176,6 +316,11 @@ python scripts/compare_algorithms.py --trials 5 --export --config config/low_loa
 # Sweep the aging bound (max_wait_threshold) for longest_queue_first
 python scripts/sweep_aging.py --trials 5
 
+# Preemptive scheduling: compare against non-preemptive, or sweep its knobs
+python scripts/sweep_preemption.py --mode compare --trials 5
+python scripts/sweep_preemption.py --mode floor  --algorithm longest_queue_first
+python scripts/sweep_preemption.py --mode margin --algorithm longest_queue_first
+
 # Generate comparison figures (bar / line / box plots) from the exported CSVs
 python scripts/generate_plots.py --config config/low_load_config.yaml --output-dir results/low_load/plots
 
@@ -219,6 +364,13 @@ oversaturated. See [Findings](#findings).
 
 `SPACE` pause · `1`/`2`/`3`/`4` switch algorithm (fixed / proportional /
 queue_clearing / longest_queue_first) · `Q` quit.
+
+The top-right panel is a **live top-down view of the junction**: roads, signal
+heads showing all three aspects, and one queued vehicle marker per detected
+vehicle on each approach, rolling forward while their phase is green. It is a
+visualisation of measured state, not a second simulation — the queue lengths
+come straight from the ROI counts and nothing in it feeds back into the
+controller.
 
 When an ambulance is detected the dashboard shows a flashing red alert band
 across the top, draws that vehicle's bounding box in red labelled `EMERGENCY`,
@@ -378,7 +530,14 @@ truncation and the guarantee that yellow and all-red still run in full, the
 light-bar classifier — including regressions for the blue-car-with-red-tail-
 lights false positive that the first version produced — and the end-to-end
 guarantee that a config with no `emergency:` block reproduces the pre-emergency
-results *bit-identically*. **166 tests, all passing.**
+results *bit-identically*.
+
+Preemptive scheduling adds tests for the minimum-service floor, the hysteresis
+margin, delegation to the base controller, the wrapper ordering that keeps
+emergency outermost (and stops the scheduler interrupting an ambulance), and
+the degenerate case where raising the floor above the cycle time drives
+mid-green switches to zero and reproduces the non-preemptive result exactly.
+**191 tests, all passing.**
 
 ## Configuration
 
@@ -416,9 +575,17 @@ adjustments are HCM-style saturation-flow factors in (0, 1]:
 | `max_preempt_green`        | 45.0 s  | Hard cap on a preemption green, in case an EV never clears. |
 | `clearance_extension`      | 3.0 s   | Hold after the last EV departs, so it is clear of the junction. |
 
+…and the `preemptive:` block, which is **off by default**:
+
+| Key | Default | Meaning |
+|-----|:-------:|---------|
+| `enabled`                    | `false` | Master switch. Off = every controller decides only at phase boundaries, as before. |
+| `min_service_before_preempt` | 5.0 s   | A green runs at least this long before it can be cut short — the quantum's floor. |
+| `margin_vehicles`            | 0       | The rival phase must lead by this many vehicles, not merely tie. Hysteresis. |
+
 Every one of these falls back to the model's historical behaviour when absent
 from a config — `1800.0`, `0.0`, unlimited storage, all-through at full
-saturation flow, and no emergency vehicles at all — so older config files still
+saturation flow, no emergency vehicles, and no mid-green preemption — so older config files still
 reproduce the numbers they originally produced. That fallback is pinned by
 tests, including one asserting that a run with `emergency:` removed is
 *bit-identical* to one with `enabled: false`.

@@ -47,6 +47,9 @@ class MetricsCollector:
         # reported on its own.
         self.emergency_records: List[EmergencyRecord] = []
         self.preemptions: List[PreemptionRecord] = []
+        # Mid-green switches made by a preemptive scheduler, as distinct from
+        # emergency preemptions. Empty for every non-preemptive controller.
+        self.scheduler_preemptions: List[PreemptionRecord] = []
 
     def record_queue_snapshot(self, t: float, queues: Dict[str, int]):
         self.queue_snapshots.append(QueueSnapshot(t, dict(queues)))
@@ -80,6 +83,9 @@ class MetricsCollector:
     def record_preemption(self, t: float, phase: str):
         self.preemptions.append(PreemptionRecord(t, phase))
 
+    def record_scheduler_preemption(self, t: float, phase: str):
+        self.scheduler_preemptions.append(PreemptionRecord(t, phase))
+
     def summary(self) -> dict:
         waits = self.vehicle_waits
         all_totals = [sum(s.queues.values()) for s in self.queue_snapshots]
@@ -101,6 +107,9 @@ class MetricsCollector:
             "avg_ev_wait": float(np.mean(ev_waits)) if ev_waits else 0.0,
             "max_ev_wait": float(np.max(ev_waits)) if ev_waits else 0.0,
             "preemptions": len(self.preemptions),
+            # Mid-green switches by a preemptive scheduler. 0 unless the
+            # `preemptive:` block is enabled.
+            "sched_preemptions": len(self.scheduler_preemptions),
         }
 
     def export_csv(self, directory: str, prefix: str = "traffic_metrics") -> dict:
