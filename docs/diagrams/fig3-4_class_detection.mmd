@@ -1,0 +1,73 @@
+classDiagram
+    direction TB
+
+    class VideoInput {
+        -frame_skip: int
+        -loop: bool
+        +read() ndarray
+        +get_first_frame() ndarray
+        +release()
+    }
+
+    class Detection {
+        +x1: float
+        +y1: float
+        +x2: float
+        +y2: float
+        +confidence: float
+        +class_id: int
+        +class_name: str
+        +is_emergency: bool
+        +center() tuple
+        +bbox() tuple
+    }
+
+    class VehicleDetector {
+        -model: YOLO
+        -confidence_threshold: float
+        +detect(frame) list
+    }
+
+    class ColorDetector {
+        -min_area: int
+        -min_saturation: int
+        -min_value: int
+        +from_config(config) ColorDetector
+        +detect(frame) list
+    }
+
+    class EmergencyClassifier {
+        -min_lightbar_fraction: float
+        -max_lightbar_fraction: float
+        -min_lightbar_balance: float
+        -max_fixture_extent: float
+        +is_emergency(frame, det) bool
+        +classify(frame, detections) list
+    }
+
+    class ROIManager {
+        -rois: dict
+        +count_vehicles_per_approach(dets) dict
+        +emergency_approaches(dets) set
+        +from_file(path) ROIManager
+    }
+
+    class Dashboard {
+        -detector
+        -algorithm: TimingAlgorithm
+        +run()
+        -_process_frame()
+        -_service_emergency()
+        -_switch_algorithm(idx)
+    }
+
+    VehicleDetector ..> Detection : creates
+    ColorDetector ..> Detection : creates
+    VehicleDetector o-- EmergencyClassifier
+    ColorDetector o-- EmergencyClassifier
+    EmergencyClassifier ..> Detection : sets is_emergency
+    ROIManager ..> Detection : reads center
+    Dashboard *-- VideoInput
+    Dashboard o-- ROIManager
+    Dashboard o-- TimingAlgorithm
+    Dashboard *-- PhaseManager

@@ -21,7 +21,7 @@ def main():
     parser.add_argument("--config", default="config/default_config.yaml")
     args = parser.parse_args()
 
-    with open(args.config) as f:
+    with open(args.config, encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     export_dir = args.export_dir or config["metrics"]["export_dir"]
@@ -39,7 +39,7 @@ def main():
         print("Run first:  python scripts/compare_algorithms.py --export")
         sys.exit(1)
 
-    with open(comparison_path) as f:
+    with open(comparison_path, encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
 
     def row_val(algo, scenario, key):
@@ -72,7 +72,7 @@ def main():
         for scenario in SCENARIOS:
             wpath = os.path.join(export_dir, f"{algo}_{scenario}_waits.csv")
             if os.path.exists(wpath):
-                with open(wpath) as f:
+                with open(wpath, encoding="utf-8") as f:
                     waits = [float(r["wait_time"]) for r in csv.DictReader(f)]
                 data.append(waits if waits else [0.0])
             else:
@@ -95,7 +95,7 @@ def main():
         if not os.path.exists(qpath):
             continue
         times, totals = [], []
-        with open(qpath) as f:
+        with open(qpath, encoding="utf-8") as f:
             for r in csv.DictReader(f):
                 times.append(float(r["time"]))
                 totals.append(sum(float(v) for k, v in r.items() if k != "time"))

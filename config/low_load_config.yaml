@@ -114,7 +114,16 @@ detection:
   model: "yolov8n.pt"
   frame_skip: 2
   # ColorDetector (synthetic video) thresholds
-  color_min_area: 400
+  # Smallest saturated blob accepted as a vehicle. Measured against generated
+  # ground truth (scripts/evaluate_detection.py): at 400 this silently dropped
+  # motorbikes — 84% of them — because a bike's blob is narrower than its
+  # bounding box, costing ~15 points of overall F1. Lowering it to 280 takes F1
+  # from 90.9% to 98.8% and motorbike recall from 16% to 98%, with precision
+  # unchanged at 99.9%.
+  # Do not lower it much further: precision falls off a cliff below 250
+  # (99.9% -> 90.6% at 240) as shadow and road-marking fragments start to
+  # qualify. 280 sits deliberately above that edge.
+  color_min_area: 280
   color_min_saturation: 50
   color_min_value: 55
   # EmergencyClassifier. COCO has no ambulance class, so an EV is identified by

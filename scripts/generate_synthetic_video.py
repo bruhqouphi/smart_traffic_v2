@@ -383,6 +383,47 @@ def queue_px(vehicles) -> float:
     return sum(v.length + VGAP for v in vehicles)
 
 
+# ── Ground truth ──────────────────────────────────────────────────────────────
+
+# The generator knows exactly where it drew every vehicle, so labelled data is
+# free — no hand-annotation, and no disagreement between annotators. That is the
+# whole reason detection accuracy is measurable on synthetic footage at all.
+#
+# A vehicle at least GT_VIS_FULL inside the frame is a labelled instance. One
+# between GT_VIS_IGNORE and GT_VIS_FULL becomes a "don't care" box: a detector
+# may or may not find it, and either way it is not scored — the same treatment
+# COCO gives crowd regions. Without that band, a car straddling the frame edge
+# is scored as an unfair miss or an unfair false positive depending purely on
+# which side of an arbitrary cutoff it happens to land.
+GT_VIS_FULL   = 0.60
+GT_VIS_IGNORE = 0.05
+
+
+def gt_record(vehicles):
+    """Ground truth for one frame: (labelled instances, ignore boxes)."""
+    labelled, ignored = [], []
+    for v in vehicles:
+        bw, bh = v.box
+        x1, y1 = v.x - bw / 2.0, v.y - bh / 2.0
+        x2, y2 = v.x + bw / 2.0, v.y + bh / 2.0
+        cx1, cy1 = max(0.0, x1), max(0.0, y1)
+        cx2, cy2 = min(float(W), x2), min(float(H), y2)
+        if cx2 <= cx1 or cy2 <= cy1:
+            continue
+        visible = ((cx2 - cx1) * (cy2 - cy1)) / max(1e-9, (x2 - x1) * (y2 - y1))
+        box = [round(cx1, 1), round(cy1, 1), round(cx2, 1), round(cy2, 1)]
+        if visible >= GT_VIS_FULL:
+            labelled.append({
+                "approach":     v.approach,
+                "bbox":         box,
+                "is_emergency": bool(v.is_emergency),
+                "vtype":        v.vtype,
+            })
+        elif visible >= GT_VIS_IGNORE:
+            ignored.append(box)
+    return labelled, ignored
+
+
 # ── Drawing ───────────────────────────────────────────────────────────────────
 
 def draw_road(canvas):
@@ -581,9 +622,19 @@ def main():
                         help="Omit the baked-in overlay. Use this for footage fed "
                              "to the dashboard, whose own panel would otherwise "
                              "contradict it (different algorithm, different counts).")
+    parser.add_argument("--ground-truth", default=None, metavar="PATH",
+                        help="Also write per-frame ground-truth boxes as JSON, "
+                             "for scoring with scripts/evaluate_detection.py. "
+                             "Pair it with --no-hud: the overlay is saturated "
+                             "colour that no vehicle label covers, so a detector "
+                             "is charged for finding it.")
     args = parser.parse_args()
 
-    with open(args.config) as f:
+    if args.ground_truth and not args.no_hud:
+        print("WARNING: --ground-truth without --no-hud. The HUD is unlabelled "
+              "saturated colour and will be scored as false positives.")
+
+    with open(args.config, encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     if args.no_emergency:
@@ -662,6 +713,7 @@ def main():
                              cv2.VideoWriter_fourcc(*"mp4v"), FPS, (W, H))
     canvas = np.zeros((H, W, 3), dtype=np.uint8)
     total  = int(args.duration * FPS)
+    gt_frames: list = []
 
     print(f"Generating {args.duration:.0f}s | {total} frames | "
           f"scenario={args.scenario} algo={args.algorithm}")
@@ -760,6 +812,14 @@ def main():
 
         writer.write(canvas)
 
+        # Recorded from the same vehicle state that was just drawn, so the
+        # labels describe this exact frame.
+        if args.ground_truth:
+            visible = [v for vl in queues.values() for v in vl] + departing
+            labelled, ignored = gt_record(visible)
+            gt_frames.append({"frame": fi, "vehicles": labelled,
+                              "ignore": ignored})
+
         if fi % (FPS * 15) == 0:
             pct = fi / total * 100
             print(f"  [{pct:5.1f}%]  t={sim_t:.0f}s  "
@@ -767,6 +827,30 @@ def main():
 
     writer.release()
     print(f"\nVideo  : {args.output}")
+
+    if args.ground_truth:
+        os.makedirs(os.path.dirname(os.path.abspath(args.ground_truth)),
+                    exist_ok=True)
+        n_veh = sum(len(f["vehicles"]) for f in gt_frames)
+        n_ev  = sum(1 for f in gt_frames for v in f["vehicles"]
+                    if v["is_emergency"])
+        with open(args.ground_truth, "w", encoding="utf-8") as f:
+            json.dump({
+                "meta": {
+                    "width": W, "height": H, "fps": FPS,
+                    "frames": len(gt_frames),
+                    "scenario": args.scenario,
+                    "algorithm": args.algorithm,
+                    "hud": not args.no_hud,
+                    "vis_full": GT_VIS_FULL,
+                    "vis_ignore": GT_VIS_IGNORE,
+                    "instances": n_veh,
+                    "emergency_instances": n_ev,
+                },
+                "frames": gt_frames,
+            }, f)
+        print(f"Truth  : {args.ground_truth} "
+              f"({n_veh} instances, {n_ev} emergency)")
 
     # ── ROI JSON ─────────────────────────────────────────────────────────
     roi = {
@@ -780,7 +864,7 @@ def main():
             [0,CY],[SL["west"],CY],[SL["west"],CY+HALF_R],[0,CY+HALF_R]]},
     }
     roi_path = "config/synthetic_roi.json"
-    with open(roi_path, "w") as f:
+    with open(roi_path, "w", encoding="utf-8") as f:
         json.dump(roi, f, indent=2)
     print(f"ROI    : {roi_path}")
     print(f"\nRun dashboard:")

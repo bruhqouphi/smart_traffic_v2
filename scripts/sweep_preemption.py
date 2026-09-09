@@ -32,7 +32,7 @@ MARGINS = [0, 1, 2, 3, 5]
 
 def base_configs(path: str):
     """(non-preemptive, preemptive) pair, both with emergency disabled."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     cfg.setdefault("emergency", {})["enabled"] = False
     cfg.setdefault("preemptive", {})

@@ -116,7 +116,7 @@ class ROICalibrator:
             print("No ROIs defined - nothing saved.")
             return
         os.makedirs(os.path.dirname(os.path.abspath(self.output_path)), exist_ok=True)
-        with open(self.output_path, "w") as f:
+        with open(self.output_path, "w", encoding="utf-8") as f:
             json.dump(self.rois, f, indent=2)
         print(f"ROI config saved: {self.output_path}")
 

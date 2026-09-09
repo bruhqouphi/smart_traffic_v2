@@ -1,0 +1,40 @@
+sequenceDiagram
+    autonumber
+    participant TG as TrafficGenerator
+    participant EN as SimEngine
+    participant IN as Intersection
+    participant EP as EmergencyPreemption<br/>Controller
+    participant BA as Base algorithm
+    participant PM as PhaseManager
+    participant MC as MetricsCollector
+
+    EN->>TG: emergency_arrivals(dt)
+    TG-->>EN: ["east"]
+    EN->>IN: arrive_emergency(["east"], t)
+    IN-->>EN: Vehicle(is_emergency=True)
+
+    Note over EN: _service_emergency()
+    EN->>IN: emergency_phases()
+    IN-->>EN: {"EW"}
+    EN->>EP: notify_emergency({"EW"}, current="NS")
+    EP-->>EN: preempting = True
+
+    alt current phase is not the target
+        EN->>PM: request_phase_change("EW", max_preempt_green)
+        EN->>PM: truncate_green(min_green_before_preempt)
+        PM-->>EN: green cut short
+    else already serving the target
+        EN->>PM: hold_green(max_preempt_green)
+    end
+    EN->>MC: record_preemption(t, "EW")
+
+    loop each tick while EW is green
+        EN->>IN: depart_phase("EW", dt, t)
+        IN-->>EN: [departed vehicles]
+        EN->>MC: record_emergency_clearance(vehicle)
+    end
+
+    Note over EP: EV clear — hold target green<br/>for clearance_extension seconds
+    EP->>EP: release preemption
+    EN->>BA: next_phase(queues, current, t)
+    BA-->>EN: normal control resumes

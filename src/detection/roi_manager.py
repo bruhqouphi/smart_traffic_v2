@@ -8,6 +8,7 @@ class ROIManager:
     def __init__(self):
         # {lane_name: {"approach": str, "polygon": List[Tuple[int,int]]}}
         self.rois: Dict[str, dict] = {}
+        self._counted_track_ids: Set[int] = set()
 
     def add_roi(self, lane_name: str, approach: str, polygon: List[Tuple[int, int]]):
         self.rois[lane_name] = {"approach": approach, "polygon": list(polygon)}
@@ -32,12 +33,46 @@ class ROIManager:
         # contains its centre wins. This prevents a vehicle in overlapping ROIs
         # from being counted for two approaches.
         counts: Dict[str, int] = {}
+        class_counts = self.count_vehicles_by_class_per_approach(detections)
+        for approach, by_class in class_counts.items():
+            counts[approach] = sum(by_class.values())
+        return counts
+
+    def count_vehicles_by_class_per_approach(self, detections) -> Dict[str, Dict[str, int]]:
+        """Return per-approach counts organised by vehicle class.
+
+        In the legacy/no-line mode, every detection is counted exactly as before.
+        In line-tracking mode, vehicles are counted once when they cross the
+        configured counting line, using the tracked `counted` flag and `track_id`
+        to prevent recounting on later frames.
+        """
+        counts: Dict[str, Dict[str, int]] = {}
+
         for det in detections:
+            track_id = getattr(det, "track_id", None)
+            counted = getattr(det, "counted", None)
+
+            # Legacy mode: no line-based counting configured, so preserve the
+            # original behaviour and count every detection in every frame.
+            if counted is None:
+                pass
+            else:
+                if not counted:
+                    continue
+                if track_id is not None and track_id in self._counted_track_ids:
+                    continue
+                if track_id is not None:
+                    self._counted_track_ids.add(track_id)
+
             for roi in self.rois.values():
                 if self._pip(*det.center, roi["polygon"]):
                     approach = roi["approach"]
-                    counts[approach] = counts.get(approach, 0) + 1
+                    counts.setdefault(approach, {})
+                    counts[approach][det.class_name] = (
+                        counts[approach].get(det.class_name, 0) + 1
+                    )
                     break
+
         return counts
 
     def emergency_approaches(self, detections) -> Set[str]:
@@ -64,11 +99,11 @@ class ROIManager:
         return counts
 
     def save(self, path: str):
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(self.rois, f, indent=2)
 
     def load(self, path: str):
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         self.rois = {
             k: {"approach": v["approach"], "polygon": [tuple(p) for p in v["polygon"]]}

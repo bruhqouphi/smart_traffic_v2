@@ -1,0 +1,41 @@
+flowchart LR
+    RES(["Researcher"])
+    OPR(["Demo Operator"])
+    VID(["Video Source"])
+    EV(["Emergency Vehicle"])
+
+    subgraph SYS["Smart Traffic Signal Control System"]
+        direction TB
+        UC1(["Run single simulation"])
+        UC2(["Compare algorithms<br/>across scenarios"])
+        UC3(["Sweep aging bound"])
+        UC4(["Sweep preemptive<br/>scheduling"])
+        UC5(["Generate synthetic<br/>footage"])
+        UC6(["Evaluate detection<br/>accuracy"])
+        UC7(["Run live dashboard"])
+        UC8(["Hot-swap algorithm<br/>mid-demo"])
+        UC9(["Detect and count<br/>vehicles"])
+        UC10(["Classify emergency<br/>vehicle"])
+        UC11(["Preempt signal"])
+        UC12(["Export metrics<br/>to CSV"])
+    end
+
+    RES --> UC1
+    RES --> UC2
+    RES --> UC3
+    RES --> UC4
+    RES --> UC5
+    RES --> UC6
+    OPR --> UC7
+    OPR --> UC8
+    VID --> UC7
+    EV -.triggers.-> UC10
+
+    UC2 -.includes.-> UC1
+    UC2 -.includes.-> UC12
+    UC3 -.includes.-> UC1
+    UC4 -.includes.-> UC1
+    UC7 -.includes.-> UC9
+    UC9 -.includes.-> UC10
+    UC10 -.extends.-> UC11
+    UC6 -.includes.-> UC9

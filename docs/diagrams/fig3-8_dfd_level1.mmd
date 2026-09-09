@@ -1,0 +1,42 @@
+flowchart TB
+    subgraph EXP["Experimental pipeline — produces all reported results"]
+        direction LR
+        P1(("1.0<br/>Generate<br/>arrivals"))
+        P2(("2.0<br/>Model<br/>queues"))
+        P3(("3.0<br/>Select phase<br/>and green"))
+        P4(("4.0<br/>Collect<br/>metrics"))
+        P1 -->|arrivals per approach| P2
+        P2 -->|queue lengths| P3
+        P3 -->|phase, green duration| P2
+        P2 -->|waits, departures, blocked| P4
+    end
+
+    subgraph VIS["Vision pipeline — live demonstration"]
+        direction LR
+        P5(("5.0<br/>Read<br/>frames"))
+        P6(("6.0<br/>Detect<br/>vehicles"))
+        P7(("7.0<br/>Classify<br/>emergency"))
+        P8(("8.0<br/>Count per<br/>ROI"))
+        P9(("9.0<br/>Select phase<br/>and green"))
+        P5 -->|frame| P6
+        P6 -->|detections| P7
+        P7 -->|flagged detections| P8
+        P8 -->|counts per approach| P9
+    end
+
+    D1[("config/*.yaml")]
+    D2[("config/synthetic_roi.json")]
+    D3[("data/videos/*.mp4")]
+    D4[("results/*.csv")]
+    D5[("ground truth JSON")]
+
+    D1 -.->|rates, timing,<br/>turning, capacity| P1
+    D1 -.->|thresholds| P3
+    D1 -.->|thresholds| P9
+    D1 -.->|detector params| P6
+    D2 -.->|lane polygons| P8
+    D3 -.->|frames| P5
+    P4 -->|per-run metrics| D4
+    D5 -.->|labelled boxes| EVAL(("10.0<br/>Score<br/>detection"))
+    P6 -->|detections| EVAL
+    EVAL -->|precision, recall, F1,<br/>count MAE| D4

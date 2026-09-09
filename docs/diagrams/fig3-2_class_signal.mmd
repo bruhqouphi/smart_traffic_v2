@@ -1,0 +1,83 @@
+classDiagram
+    direction TB
+
+    class TimingAlgorithm {
+        <<abstract>>
+        +next_phase(queues, current_phase, elapsed) str
+        +green_duration(queues, phase) float
+        +get_last_reason() str
+        +update_sim_time(t)
+        +record_served(phase)
+        +wants_preemption(queues, phase, elapsed) bool
+    }
+
+    class FixedTimingAlgorithm {
+        -green_time: float
+        +next_phase() str
+        +green_duration() float
+    }
+
+    class ProportionalTimingAlgorithm {
+        -min_green: float
+        -max_green: float
+        +green_duration() float
+    }
+
+    class QueueClearingAlgorithm {
+        -threshold: int
+        -max_wait: float
+        -_last_served: dict
+        +_is_starving(phase) bool
+        +next_phase() str
+        +green_duration() float
+    }
+
+    class LongestQueueFirstAlgorithm {
+        +next_phase() str
+    }
+
+    class PreemptiveSchedulingController {
+        -base: TimingAlgorithm
+        -min_service: float
+        -margin: int
+        +wants_preemption() bool
+    }
+
+    class EmergencyPreemptionController {
+        -base: TimingAlgorithm
+        -min_green_before_preempt: float
+        -max_preempt_green: float
+        -clearance_extension: float
+        +is_preempting bool
+        +target_phase str
+        +notify_emergency(phases, current) bool
+    }
+
+    TimingAlgorithm <|-- FixedTimingAlgorithm
+    TimingAlgorithm <|-- ProportionalTimingAlgorithm
+    TimingAlgorithm <|-- QueueClearingAlgorithm
+    QueueClearingAlgorithm <|-- LongestQueueFirstAlgorithm
+    TimingAlgorithm <|-- PreemptiveSchedulingController
+    TimingAlgorithm <|-- EmergencyPreemptionController
+
+    PreemptiveSchedulingController o-- TimingAlgorithm : wraps base
+    EmergencyPreemptionController o-- TimingAlgorithm : wraps base
+
+    class PhaseManager {
+        -state: SignalState
+        -current_phase: str
+        +request_phase_change(phase, green)
+        +truncate_green(min_elapsed) bool
+        +hold_green(duration)
+        +step(dt) bool
+        +get_signal_colors() dict
+    }
+
+    class SignalState {
+        <<enumeration>>
+        GREEN
+        YELLOW
+        ALL_RED
+    }
+
+    PhaseManager --> SignalState : holds

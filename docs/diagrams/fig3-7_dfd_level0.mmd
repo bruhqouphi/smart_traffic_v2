@@ -1,0 +1,15 @@
+flowchart LR
+    RES["Researcher"]
+    OPR["Demo Operator"]
+    CAM["Video file /<br/>camera feed"]
+
+    SYS(("Smart Traffic<br/>Signal Control<br/>System"))
+
+    CSV["Results<br/>CSV + charts"]
+    SCR["Live dashboard<br/>display"]
+
+    RES -->|scenario, algorithm,<br/>trials, seed| SYS
+    OPR -->|algorithm hot-swap<br/>keys 1–4| SYS
+    CAM -->|video frames| SYS
+    SYS -->|wait, queue, throughput,<br/>blocked, EV response| CSV
+    SYS -->|signal state, counts,<br/>EV alerts| SCR

@@ -1,0 +1,75 @@
+classDiagram
+    direction TB
+
+    class SimEngine {
+        -config: dict
+        -algorithm: TimingAlgorithm
+        +step()
+        +run(duration) MetricsCollector
+        +get_state() dict
+        -_service_emergency()
+        -_service_scheduler_preemption()
+        -_is_discharging() bool
+    }
+
+    class Intersection {
+        -queues: dict
+        +arrive(arrivals, t) dict
+        +arrive_emergency(approaches, t) list
+        +depart_phase(phase, dt, t) list
+        +queue_lengths() dict
+        +clearance_time(phase) float
+        +emergency_phases() set
+    }
+
+    class ApproachQueue {
+        -capacity: int
+        -vehicles: list
+        +arrive(n, t, movements) int
+        +arrive_emergency(t) Vehicle
+        +depart(dt, t) list
+        +service_time(vehicle) float
+        +is_full() bool
+    }
+
+    class Vehicle {
+        +arrival_time: float
+        +departure_time: float
+        +movement: str
+        +is_emergency: bool
+        +wait_time() float
+    }
+
+    class TurningMix {
+        -through: float
+        -left: float
+        -right: float
+        +sample(n) list
+        +adjustment(movement) float
+    }
+
+    class TrafficGenerator {
+        -rates: dict
+        -rng: Generator
+        -ev_rng: Generator
+        +arrivals_all(dt) dict
+        +emergency_arrivals(dt) list
+    }
+
+    class MetricsCollector {
+        +record_queue_snapshot(t, queues)
+        +record_vehicle_wait(wait, approach)
+        +record_emergency_clearance(vehicle)
+        +record_preemption(t, phase)
+        +summary() dict
+        +export_csv(dir, prefix) dict
+    }
+
+    SimEngine *-- Intersection
+    SimEngine *-- TrafficGenerator
+    SimEngine *-- MetricsCollector
+    SimEngine *-- PhaseManager
+    SimEngine o-- TimingAlgorithm : injected
+    Intersection *-- ApproachQueue
+    Intersection *-- TurningMix
+    ApproachQueue *-- Vehicle

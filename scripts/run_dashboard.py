@@ -26,7 +26,7 @@ def main():
         print(f"Error: video file not found: {args.video}", file=sys.stderr)
         sys.exit(1)
 
-    with open(args.config) as f:
+    with open(args.config, encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     # For the synthetic (color) demo, default to the bundled ROI so per-approach

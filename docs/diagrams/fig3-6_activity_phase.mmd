@@ -1,0 +1,32 @@
+flowchart TD
+    START(["Phase boundary reached"]) --> AGE{"Other phase starved?<br/>time since served exceeds max_wait"}
+    AGE -->|yes| PROMOTE["Serve the starved phase<br/><i>reason: Aging</i>"]
+    AGE -->|no| BOTH{"Both queues empty?"}
+    BOTH -->|yes| ALT["Alternate phase<br/><i>reason: Both empty</i>"]
+    BOTH -->|no| ONE{"Exactly one queue empty?"}
+    ONE -->|yes| NONEMPTY["Serve the non-empty phase"]
+    ONE -->|no| RULE{"Selection rule"}
+
+    RULE -->|queue_clearing / SJF| SJF{"Either queue<br/>≤ threshold?"}
+    SJF -->|yes| SHORT["Serve the shorter queue<br/><i>reason: SJF</i>"]
+    SJF -->|no| LARGER1["Serve the larger queue"]
+    RULE -->|longest_queue_first| LARGER2["Serve the larger queue<br/><i>max-pressure</i>"]
+
+    PROMOTE --> GREEN
+    ALT --> GREEN
+    NONEMPTY --> GREEN
+    SHORT --> GREEN
+    LARGER1 --> GREEN
+    LARGER2 --> GREEN
+
+    GREEN{"Queue ≤ threshold?"} -->|yes| SG["green = short_green"]
+    GREEN -->|no| LG["green = startup_lost + q × headway<br/>clamped to long_min…long_max"]
+    SG --> END(["Apply green time"])
+    LG --> END
+
+    style RULE fill:#e8a33d,stroke:#b87d20,color:#1a1a1a
+    style SJF fill:#f3d9ae,stroke:#b87d20,color:#1a1a1a
+    style SHORT fill:#f3d9ae,stroke:#b87d20,color:#1a1a1a
+    style LARGER1 fill:#f3d9ae,stroke:#b87d20,color:#1a1a1a
+    style LARGER2 fill:#f3d9ae,stroke:#b87d20,color:#1a1a1a
+    style AGE fill:#2e7d5b,stroke:#1c5138,color:#ffffff
