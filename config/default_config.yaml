@@ -100,7 +100,7 @@ scenarios:
 
 detection:
   vehicle_classes: [1, 2, 3, 5, 7]
-  confidence_threshold: 0.4
+  confidence_threshold: 0.5
   model: "yolov8n.pt"
   # Optional: set a counting line in pixels from the top of the frame. When it
   # is configured, the detector uses ByteTrack persistence and only counts a
